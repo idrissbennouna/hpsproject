@@ -1,0 +1,62 @@
+# =========================
+# Python / FastAPI
+# =========================
+# Ignore les dossiers d'environnement n'importe où dans le projet
+.venv/
+**/venv/
+**/env/
+**/ENV/
+backend/.venv/
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Variables d'environnement
+.env
+.env.*
+!.env.example
+
+# =========================
+# Logs et fichiers temporaires
+# =========================
+*.log
+*.tmp
+*.temp
+
+# =========================
+# Fichiers de données
+# =========================
+backend/app/storage/*.TXT
+backend/app/storage/*.csv
+backend/app/storage/*.xlsx
+backend/app/storage/*.pdf
+
+# =========================
+# React / Node.js
+# =========================
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+
+# =========================
+# IDE
+# =========================
+.vscode/
+.idea/
+
+# =========================
+# Système
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Git
+# =========================
+.gitignore.bak
