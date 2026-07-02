@@ -17,7 +17,7 @@ app = FastAPI(
 # Permet à ton frontend React (généralement sur http://localhost:5173 ou 3000) de requêter l'API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # En production, spécifie l'URL exacte de ton React
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "*"],  # En production, spécifie l'URL exacte de ton React
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
