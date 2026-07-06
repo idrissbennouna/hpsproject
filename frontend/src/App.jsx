@@ -24,7 +24,37 @@ function App() {
     setError("");
   };
 
-const runLogAnalysis = async () => {
+  // Nouvelle fonction pour récupérer le PDF généré par le backend FastAPI
+  const handleDownloadPDF = async () => {
+  try {
+    // On ajoute un paramètre de timestamp (?t=...) pour briser le cache du navigateur
+    const response = await axios.get(`http://127.0.0.1:8000/api/v1/logs/download-pdf?t=${Date.now()}`, {
+      responseType: 'arraybuffer' // Utilisation d'arraybuffer pour une capture binaire brute plus robuste
+    });
+
+    // Conversion en Blob d'application PDF
+    const blob = new Blob([response.data], { type: 'application/pdf' });
+    const blobURL = window.URL.createObjectURL(blob);
+    
+    // Création du déclencheur de téléchargement
+    const downloadLink = document.createElement('a');
+    downloadLink.href = blobURL;
+    downloadLink.download = 'Rapport_HPS.pdf'; // Force le téléchargement plutôt que l'affichage
+    
+    document.body.appendChild(downloadLink);
+    downloadLink.click();
+    
+    // Nettoyage immédiat de la mémoire
+    document.body.removeChild(downloadLink);
+    window.URL.revokeObjectURL(blobURL);
+
+  } catch (err) {
+    console.error("Erreur d'extraction du document PDF :", err);
+    alert("Erreur lors du téléchargement direct du PDF.");
+  }
+};
+
+  const runLogAnalysis = async () => {
     if (!file) {
       setError("Veuillez sélectionner un fichier de traces (.TXT) avant de lancer l'analyse.");
       return;
@@ -38,7 +68,6 @@ const runLogAnalysis = async () => {
     const formData = new FormData();
     formData.append("file", file);
    
-    // Sécurité : Si le champ est vide ou trop court, on met le prompt par défaut idéal
     const cleanPrompt = prompt.trim() === "" 
       ? "Génère-moi la story complète de mon fichier de traces et vérifie s'il y a des alertes de non-conformité." 
       : prompt;
@@ -46,15 +75,12 @@ const runLogAnalysis = async () => {
     formData.append("user_prompt", cleanPrompt);
 
     try {
-      // Dynamique visuelle des agents
       setTimeout(() => setActiveAgent("LogAgent (Analyse & Diagnostic...)"), 1200);
 
-      // CORRECTION 1 : Utilisation de l'URL exacte définie dans FastAPI
       const response = await axios.post("http://127.0.0.1:8000/api/v1/logs/analyze", formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
-      // CORRECTION 2 : Récupération de la clé 'analysis_report' renvoyée par ton backend
       setResult(response.data.analysis_report || response.data);
       setActiveAgent("FINISH");
     } catch (err) {
@@ -72,7 +98,7 @@ const runLogAnalysis = async () => {
 
   return (
     <div style={styles.appContainer}>
-      {/* 1. SIDEBAR LATÉRALE (L'effet Plateforme) */}
+      {/* 1. SIDEBAR LATÉRALE */}
       <aside style={styles.sidebar}>
         <div style={styles.logoArea}>
           <h1 style={styles.mainTitle}>ComplianceVerifier</h1>
@@ -112,7 +138,6 @@ const runLogAnalysis = async () => {
                 <p style={styles.sectionDesc}>Extraction de LogStory, détection de non-conformités et levée d'alertes.</p>
               </div>
               
-              {/* Indicateur d'Agent en Direct */}
               <div style={styles.agentBadge}>
                 <span style={styles.badgeLabel}>Agent Actif :</span>
                 <span style={styles.badgeValue}>{activeAgent}</span>
@@ -142,8 +167,8 @@ const runLogAnalysis = async () => {
                     onChange={(e) => setPrompt(e.target.value)}
                     placeholder="Ex: Analyse ce fichier de traces et donne-moi la story ainsi que les erreurs..."
                     rows={3}
-                />
-              </div>
+                  />
+                </div>
 
                 <button 
                   style={{...styles.actionBtn, ...(loading ? styles.actionBtnDisabled : {})}} 
@@ -156,19 +181,45 @@ const runLogAnalysis = async () => {
                 {error && <div style={styles.errorBox}>⚠️ {error}</div>}
               </div>
 
-              {/* Écran d'affichage du rapport à droite */}
+              {/* Écran d'affichage du rapport à droite (STRUCTURE DASHBOARD AMÉLIORÉE) */}
               <div style={{...styles.card, ...styles.resultCard}}>
-                <h3 style={styles.cardTitle}>Rapport d'Analyse Métier (Format QA)</h3>
                 {result ? (
-                  <div style={styles.markdownRender}>
-                    <Markdown>{result}</Markdown>
+                  <div style={styles.dashboardView}>
+                    {/* En-tête du Dashboard */}
+                    <div style={styles.dashboardHeader}>
+                      <div>
+                        <h3 style={styles.dashboardTitle}>Rapport d'Analyse Métier — Mode QA</h3>
+                        <small style={styles.dashboardMeta}>Source de validation : Spec_PowerCARD.xlsx</small>
+                      </div>
+                      <button onClick={handleDownloadPDF} style={styles.pdfBtn}>
+                        📄 Télécharger PDF
+                      </button>
+                    </div>
+
+                    {/* Section Contexte / Identifiants */}
+                    <div style={styles.dashboardSection}>
+                      <h4 style={styles.sectionSubTitle}>Contexte de l'Analyse</h4>
+                      <div style={styles.badgeGroup}>
+                        <span style={styles.dangerBadge}>transaction_id: NULL</span>
+                        <span style={styles.dangerBadge}>stan: NULL</span>
+                        <span style={styles.dangerBadge}>pan: NULL</span>
+                      </div>
+                    </div>
+
+                    {/* Section LogStory & Markdown Parser intégré proprement */}
+                    <div style={styles.dashboardSection}>
+                      <h4 style={styles.sectionSubTitle}>Déroulement Chronologique & Diagnostic</h4>
+                      <div style={styles.markdownRender}>
+                        <Markdown>{result}</Markdown>
+                      </div>
+                    </div>
                   </div>
                 ) : (
                   <div style={styles.emptyState}>
                     {loading ? (
                       <div style={styles.loader}></div>
                     ) : (
-                      <p>En attente du traitement du fichier de traces... Le rapport final s'affichera sous forme de listes à puces.</p>
+                      <p>En attente du traitement du fichier de traces... Le rapport analytique complet s'affichera ici structuré par blocs.</p>
                     )}
                   </div>
                 )}
@@ -211,7 +262,7 @@ const runLogAnalysis = async () => {
   );
 }
 
-// 🎨 DESIGN SYSTEM HPS-COMPLIANCE (CSS-in-JS propre et ultra-rapide)
+// 🎨 DESIGN SYSTEM HPS-COMPLIANCE (Avec ajouts des styles Dashboard)
 const styles = {
   appContainer: {
     display: "flex",
@@ -315,7 +366,7 @@ const styles = {
   },
   dashboardGrid: {
     display: "grid",
-    gridTemplateColumns: "1fr 1.5fr",
+    gridTemplateColumns: "1fr 1.6fr",
     gap: "24px",
   },
   card: {
@@ -328,7 +379,7 @@ const styles = {
     flexDirection: "column",
   },
   resultCard: {
-    minHeight: "500px",
+    minHeight: "550px",
   },
   cardTitle: {
     fontSize: "18px",
@@ -375,9 +426,7 @@ const styles = {
     fontFamily: "inherit",
     resize: "none",
     color: "#334155",
-    backgroundColor: "#ffffff", // Fond blanc style ChatGPT
-    boxShadow: "inset 0 1px 2px rgba(0,0,0,0.05)",
-    transition: "border-color 0.2s, box-shadow 0.2s",
+    backgroundColor: "#ffffff",
     outline: "none",
   },
   input: {
@@ -422,11 +471,6 @@ const styles = {
     fontSize: "14px",
     padding: "20px",
   },
-  markdownRender: {
-    fontSize: "14px",
-    lineHeight: "1.6",
-    color: "#334155",
-  },
   loader: {
     border: "4px solid #f3f3f3",
     borderTop: "4px solid #0284c7",
@@ -434,6 +478,72 @@ const styles = {
     width: "30px",
     height: "30px",
     animation: "spin 1s linear infinite",
+  },
+
+  // NOUVEAUX STYLES INTERNES POUR LE RENDU DU DASHBOARD
+  dashboardView: {
+    display: "flex",
+    flexDirection: "column",
+    textAlign: "left", // Force l'alignement global à gauche
+    width: "100%",
+  },
+  dashboardHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    borderBottom: "2px solid #0284c7",
+    paddingBottom: "14px",
+    marginBottom: "20px",
+  },
+  dashboardTitle: {
+    fontSize: "18px",
+    fontWeight: "700",
+    color: "#0284c7",
+    margin: 0,
+  },
+  dashboardMeta: {
+    fontSize: "12px",
+    color: "#64748b",
+  },
+  pdfBtn: {
+    backgroundColor: "#0284c7",
+    color: "#ffffff",
+    border: "none",
+    padding: "8px 16px",
+    borderRadius: "6px",
+    fontWeight: "600",
+    fontSize: "13px",
+    cursor: "pointer",
+  },
+  dashboardSection: {
+    marginBottom: "22px",
+  },
+  sectionSubTitle: {
+    fontSize: "14px",
+    fontWeight: "600",
+    color: "#1e293b",
+    margin: "0 0 10px 0",
+    textTransform: "uppercase",
+    letterSpacing: "0.5px",
+  },
+  badgeGroup: {
+    display: "flex",
+    gap: "10px",
+  },
+  dangerBadge: {
+    backgroundColor: "#fee2e2",
+    color: "#991b1b",
+    padding: "6px 12px",
+    borderRadius: "6px",
+    fontFamily: "monospace",
+    fontSize: "12px",
+    border: "1px solid #fca5a5",
+  },
+  markdownRender: {
+    fontSize: "14px",
+    lineHeight: "1.6",
+    color: "#334155",
+    textAlign: "left", // Élimine tout centrage Markdown résiduel
   }
 };
 
