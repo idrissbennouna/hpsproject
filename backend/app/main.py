@@ -6,6 +6,10 @@ from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Import de ton application LangGraph compilée
 from app.core.agent_graph import compliance_agent_app
