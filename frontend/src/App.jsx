@@ -62,6 +62,30 @@ function App() {
     }
   };
 
+  const handleDownloadPDF = async () => {
+    try {
+      const response = await axios.get(`http://127.0.0.1:8000/api/v1/logs/download-pdf?t=${Date.now()}`, {
+        responseType: 'arraybuffer'
+      });
+
+      const blob = new Blob([response.data], { type: 'application/pdf' });
+      const blobURL = window.URL.createObjectURL(blob);
+      
+      const downloadLink = document.createElement('a');
+      downloadLink.href = blobURL;
+      downloadLink.download = 'Rapport_Compliance_HPS.pdf';
+      
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      
+      document.body.removeChild(downloadLink);
+      window.URL.revokeObjectURL(blobURL);
+    } catch (err) {
+      console.error("Erreur d'extraction du document PDF :", err);
+      alert("Erreur lors du téléchargement du PDF. Veuillez vous assurer que l'analyse a été complétée avec succès.");
+    }
+  };
+
   const runDocQuery = () => {
     if (!docQuery) return;
     setDocResult(` **Réponse simulée de l'Agent Documentaire :**\n\nL'analyse des spécifications associées à votre question est en cours de développement.\n\n*Prochaine étape : Interconnexion de la base de données PostgreSQL + pgvector pour parser les fichiers Excel, Word et PDF.*`);
@@ -156,7 +180,14 @@ function App() {
 
               {/* Écran d'affichage du rapport à droite */}
               <div className="card result-card">
-                <h3 className="card-title">Rapport d'Analyse Métier</h3>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(0, 0, 0, 0.05)", paddingBottom: "14px", marginBottom: "20px" }}>
+                  <h3 className="card-title" style={{ margin: 0, border: "none", padding: 0 }}>Rapport d'Analyse Métier</h3>
+                  {result && (
+                    <button onClick={handleDownloadPDF} className="action-btn" style={{ padding: "8px 16px", fontSize: "13px", borderRadius: "8px", marginTop: 0 }}>
+                       Télécharger PDF
+                    </button>
+                  )}
+                </div>
                 {result ? (
                   <div className="markdown-render">
                     <Markdown>{result}</Markdown>
