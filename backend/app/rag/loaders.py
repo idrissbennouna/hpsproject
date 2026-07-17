@@ -15,7 +15,12 @@ def load_excel_specs(excel_path: Path) -> list[Document]:
         return []
 
     wb = openpyxl.load_workbook(str(excel_path), data_only=True)
-    ws = wb["Lib"]
+    if "Lib" in wb.sheetnames:
+        ws = wb["Lib"]
+    else:
+        ws = wb[wb.sheetnames[0]]
+        print(f"⚠️ Onglet 'Lib' introuvable dans {excel_path.name}, utilisation du premier onglet '{ws.title}' à la place.")
+
     documents = []
     for row in ws.iter_rows(min_row=2, values_only=True):
         func_name, source, path, description, exception = row[:5]
@@ -28,7 +33,7 @@ def load_excel_specs(excel_path: Path) -> list[Document]:
             documents.append(Document(
                 page_content=content,
                 metadata={
-                    "source": "Spec_PowerCARD.xlsx", 
+                    "source_file": "Spec_PowerCARD.xlsx", 
                     "function": func_name.strip(),
                     "module": str(source).strip() if source else "",
                     "file_path": str(path).strip() if path else ""

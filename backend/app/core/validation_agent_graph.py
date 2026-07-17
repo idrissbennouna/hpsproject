@@ -58,11 +58,21 @@ def retriever_node(state: ValidationState) -> Dict[str, Any]:
     """
     question = state.get("user_question", "")
     session_id = state.get("session_id", "")
+    chat_history = state.get("chat_history", [])
+
+    # Construit une requête de recherche enrichie du contexte conversationnel récent,
+    # pour que les questions de suivi ("et si ça échoue ?") retrouvent le bon document
+    # même sans répéter le nom de la fonction/du champ concerné.
+    recent_turns = chat_history[-2:] if chat_history else []
+    context_snippet = " ".join(
+        turn.get("content", "") for turn in recent_turns if turn.get("content")
+    )
+    search_query = f"{context_snippet} {question}".strip() if context_snippet else question
     
     sources = []
     
     # 1. Requête du RAG persistant classique (k=2 pour économiser les tokens)
-    official_specs = query_specs(question, k=2)
+    official_specs = query_specs(search_query, k=2)
     
     context_blocks = []
     if official_specs.strip():
@@ -79,14 +89,40 @@ def retriever_node(state: ValidationState) -> Dict[str, Any]:
             file_blocks = []
             for file_info in session_files:
                 filename = file_info["name"]
-                content = file_info["content"]
                 stats = file_info.get("stats", {})
+                
+                # Si c'est un fichier indexé via RAG éphémère (comme un PDF)
+                if file_info.get("is_rag") or filename.lower().endswith('.pdf'):
+                    try:
+                        from app.rag.retriever import get_session_vectorstore
+                        session_db = get_session_vectorstore()
+                        relevant_docs = session_db.similarity_search(
+                            search_query, 
+                            k=4, 
+                            filter={"session_id": session_id}
+                        )
+                        if relevant_docs:
+                            chunk_blocks = []
+                            for idx, doc in enumerate(relevant_docs, 1):
+                                page_num = doc.metadata.get("page", "?")
+                                chunk_blocks.append(
+                                    f"[Extrait RAG {idx} (Page {page_num})] :\n{doc.page_content.strip()}"
+                                )
+                            content = "\n\n".join(chunk_blocks)
+                        else:
+                            content = "Aucun passage pertinent trouvé dans ce document pour la question posée."
+                    except Exception as e:
+                        content = f"Erreur lors de la recherche vectorielle RAG de session : {e}"
+                else:
+                    content = file_info["content"]
                 
                 # Injection explicite des métadonnées calculées
                 truncation_note = (
-                    " (le texte ci-dessous est tronqué pour limiter la consommation de "
-                    "tokens, mais ces statistiques portent sur le fichier ORIGINAL complet)"
-                    if stats.get("truncated_for_llm") else ""
+                    " (le texte ci-dessous contient les extraits les plus pertinents basés sur votre recherche)"
+                    if file_info.get("is_rag") or filename.lower().endswith('.pdf')
+                    else (" (le texte ci-dessous est tronqué pour limiter la consommation de "
+                          "tokens, mais ces statistiques portent sur le fichier ORIGINAL complet)"
+                          if stats.get("truncated_for_llm") else "")
                 )
                 meta_header = (
                     f"[Métadonnées calculées automatiquement — "

@@ -20,6 +20,7 @@ COLLECTION_NAME = "hps_specifications"
 # Singletons pour les embeddings et le vectorstore
 _embeddings_instance = None
 _vectorstore_instance = None
+_session_vectorstore_instance = None
 
 def get_embeddings() -> GoogleGenerativeAIEmbeddings:
     """Retourne l'instance unique (singleton) pour la génération d'embeddings via Gemini."""
@@ -46,31 +47,36 @@ def get_vectorstore() -> PGVector:
         )
     return _vectorstore_instance
 
-def query_specs(query: str, k: int = 4) -> str:
-    """
-    Exécute une recherche de similarité sur les spécifications PowerCARD.
-    Formate le résultat en un unique bloc textuel propre indiquant la source de chaque segment.
-    """
+def get_session_vectorstore() -> PGVector:
+    """Retourne l'instance unique (singleton) de la base vectorielle PGVector pour les sessions éphémères."""
+    global _session_vectorstore_instance
+    if _session_vectorstore_instance is None:
+        embeddings = get_embeddings()
+        _session_vectorstore_instance = PGVector(
+            connection_string=CONNECTION_STRING,
+            embedding_function=embeddings,
+            collection_name="hps_session_files"
+        )
+    return _session_vectorstore_instance
+
+def delete_session_documents(session_id: str):
+    """Supprime tous les documents associés à une session dans PGVector."""
     try:
-        db = get_vectorstore()
-        docs = db.similarity_search(query, k=k)
-        if docs:
-            formatted_docs = []
-            for i, doc in enumerate(docs, 1):
-                source = doc.metadata.get("source", "Inconnu")
-                function_name = doc.metadata.get("function", "N/A")
-                formatted_docs.append(
-                    f"--- Extrait {i} (Source: {source}, Fonction: {function_name}) ---\n"
-                    f"{doc.page_content.strip()}"
-                )
-            return "\n\n".join(formatted_docs)
-        else:
-            # Si pgvector est en ligne mais ne renvoie rien, on retourne vide (pas de fallback nécessaire)
-            return ""
+        from sqlalchemy import create_engine, text
+        engine = create_engine(CONNECTION_STRING)
+        with engine.connect() as conn:
+            conn.execute(
+                text("DELETE FROM langchain_pg_embedding WHERE cmetadata->>'session_id' = :session_id"),
+                {"session_id": session_id}
+            )
+            conn.commit()
+        print(f"🗑️ Documents de la session '{session_id}' supprimés de pgvector.")
     except Exception as e:
-        print(f"⚠️ Recherche vectorielle échouée (Erreur: {type(e).__name__} - {str(e)}). Utilisation du fallback Excel local...")
-    
-    # Fallback local : recherche textuelle simple par mot-clé dans Spec_PowerCARD.xlsx
+        print(f"⚠️ Impossible de supprimer les documents de session dans pgvector : {e}")
+
+
+def _local_excel_fallback(query: str, k: int = 4) -> str:
+    """Fallback local : recherche textuelle simple par mot-clé dans Spec_PowerCARD.xlsx"""
     try:
         from app.services.spec_loader import load_function_specs
         project_root = Path(__file__).resolve().parents[2]
@@ -131,3 +137,42 @@ def query_specs(query: str, k: int = 4) -> str:
         print(f"❌ Échec critique du fallback de recherche Excel : {fallback_err}")
         
     return ""
+
+
+def query_specs(query: str, k: int = 4) -> str:
+    """
+    Exécute une recherche de similarité sur les spécifications PowerCARD.
+    Formate le résultat en un unique bloc textuel propre indiquant la source de chaque segment.
+    """
+    try:
+        db = get_vectorstore()
+        docs = db.similarity_search(query, k=k)
+        
+        # Vérification si les documents matchent le ou les mots-clés/fonctions de la requête
+        query_words = {w.lower() for w in re.findall(r"\w+", query) if w}
+        has_matching_doc = False
+        if docs:
+            for doc in docs:
+                func_name = doc.metadata.get("function")
+                if func_name:
+                    func_lower = str(func_name).strip().lower()
+                    if func_lower in query_words or any(w in func_lower for w in query_words):
+                        has_matching_doc = True
+                        break
+                        
+        if docs and has_matching_doc:
+            formatted_docs = []
+            for i, doc in enumerate(docs, 1):
+                source = doc.metadata.get("module") or doc.metadata.get("source_file", "Inconnu")
+                function_name = doc.metadata.get("function", "N/A")
+                formatted_docs.append(
+                    f"--- Extrait {i} (Source: {source}, Fonction: {function_name}) ---\n"
+                    f"{doc.page_content.strip()}"
+                )
+            return "\n\n".join(formatted_docs)
+        else:
+            print("⚠️ Aucun document pgvector trouvé ou aucun ne correspond aux fonctions de la requête. Utilisation du fallback Excel...")
+            return _local_excel_fallback(query, k=k)
+    except Exception as e:
+        print(f"⚠️ Recherche vectorielle échouée (Erreur: {type(e).__name__} - {str(e)}). Utilisation du fallback Excel local...")
+        return _local_excel_fallback(query, k=k)

@@ -137,10 +137,17 @@ def parse_trace_file_for_story(file_path: str, spec_path: str = None) -> list:
         # résidu du cycle d'echo-test précédent (flush tardif du FLD070=[301])
         # juste avant une vraie transaction sur la même session : on ne veut pas
         # perdre cette transaction à cause de ce résidu.
-        has_real_content = bool(tx["identifiers"]["stan"]) or bool(tx["alerts"])
-        if tx["is_heartbeat"] and not has_real_content:
+        has_real_content = (
+            bool(tx["identifiers"]["stan"])
+            or bool(tx["alerts"])
+            or bool(tx["identifiers"]["transaction_id"])
+        )
+        final_is_heartbeat = tx["is_heartbeat"] and not has_real_content
+        if final_is_heartbeat:
             return
-        if not (tx["events"] or tx["identifiers"]["stan"]):
+        
+        # Bug secondaire : rejette les stubs vides
+        if not tx["identifiers"]["stan"] and not tx["identifiers"]["transaction_id"] and len(tx["events"]) <= 1:
             return
 
         # Corrélation croisée : le vrai code réponse (MTI 1110) peut avoir été
@@ -165,6 +172,7 @@ def parse_trace_file_for_story(file_path: str, spec_path: str = None) -> list:
             "chronology": "\n".join(f"- {ev}" for ev in tx["events"]),
             "alerts_found": list(tx["alerts"]),
             "failed_functions": list(tx["failed_functions"]),
+            "is_heartbeat": final_is_heartbeat,
         })
 
     try:
@@ -251,3 +259,25 @@ def parse_trace_file_for_story(file_path: str, spec_path: str = None) -> list:
         return []
 
     return all_transactions
+
+
+def parse_and_format_log_file(file_path: str) -> str:
+    """
+    Parses a log file using parse_trace_file_for_story and returns a formatted
+    text representation of its transactions.
+    """
+    transactions = parse_trace_file_for_story(file_path)
+    if not transactions:
+        return ""
+    blocks = []
+    for idx, tx in enumerate(transactions, 1):
+        idents = tx.get("identifiers", {})
+        chronology = tx.get("chronology", "")
+        alerts = tx.get("alerts_found", [])
+        blocks.append(
+            f"=== Transaction {idx} ===\n"
+            f"STAN: {idents.get('stan') or 'N/A'} | PAN: {idents.get('pan') or 'N/A'} | ID: {idents.get('transaction_id') or 'N/A'}\n"
+            f"Chronologie:\n{chronology}\n"
+            f"Alertes: {', '.join(alerts) if alerts else 'Aucune'}"
+        )
+    return "\n\n".join(blocks)

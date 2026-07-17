@@ -137,19 +137,19 @@ def rag_spec_retriever_node(state: AgentState) -> Dict[str, Any]:
                     if func not in detected_errors:
                         detected_errors.append(func)
 
-    # Requête de la base vectorielle via le module partagé
-    rag_extracted_rules = ""
     if detected_errors:
         query_str = " ".join(detected_errors)
         rag_extracted_rules = query_specs(query_str, k=2)
-        
-        # Transition en douceur : si la base vectorielle ne renvoie rien,
-        # fallback sur la recherche locale Excel classique
         if not rag_extracted_rules.strip():
-            print("⚠️ Base vectorielle muette, utilisation du fallback local get_spec_context_for_functions")
             rag_extracted_rules = get_spec_context_for_functions(detected_errors)
-
-    if not rag_extracted_rules:
+        if not rag_extracted_rules.strip():
+            rag_extracted_rules = (
+                f"ALERTE(S) DÉTECTÉE(S) sur la ou les fonction(s) suivante(s) : "
+                f"{', '.join(detected_errors)}. Aucune spécification correspondante n'a été "
+                "trouvée ni dans la base vectorielle pgvector ni dans le fallback Excel "
+                "Spec_PowerCARD.xlsx — une vérification manuelle de ces fonctions est requise."
+            )
+    else:
         rag_extracted_rules = (
             "Aucune anomalie détectée sur les fonctions métier surveillées "
             f"({', '.join(monitored_functions)}). Aucune spécification à mobiliser."

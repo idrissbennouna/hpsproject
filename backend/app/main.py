@@ -392,17 +392,56 @@ async def upload_validation_file(
 
         # Extraction de texte par type de fichier
         if filename.endswith('.txt'):
-            content = file_bytes.decode("utf-8", errors="ignore")
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".TXT") as temp_file:
+                temp_file.write(file_bytes)
+                temp_path = temp_file.name
+            try:
+                from app.services.log_parser import parse_and_format_log_file
+                content = parse_and_format_log_file(temp_path)
+                if not content:
+                    content = file_bytes.decode("utf-8", errors="ignore")
+            finally:
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
             
         elif filename.endswith('.pdf'):
             import pypdf
+            from langchain_core.documents import Document
+            from langchain_text_splitters import RecursiveCharacterTextSplitter
+            from app.rag.retriever import get_session_vectorstore, delete_session_documents
+
             pdf_reader = pypdf.PdfReader(io.BytesIO(file_bytes))
             pages_text = []
+            documents = []
             for idx, page in enumerate(pdf_reader.pages, 1):
                 page_text = page.extract_text() or ""
-                pages_text.append(f"[Page {idx}]\n{page_text}")
+                if page_text.strip():
+                    pages_text.append(f"[Page {idx}]\n{page_text}")
+                    documents.append(Document(
+                        page_content=page_text,
+                        metadata={
+                            "session_id": session_id,
+                            "source": file.filename,
+                            "page": idx
+                        }
+                    ))
             content = "\n\n".join(pages_text)
             
+            if documents:
+                # Nettoyage des anciens documents de la session
+                delete_session_documents(session_id)
+                
+                # Split du texte en chunks
+                text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+                chunks = text_splitter.split_documents(documents)
+                
+                # Ingestion dans le vectorstore de session
+                session_db = get_session_vectorstore()
+                session_db.add_documents(chunks)
+
         elif filename.endswith('.xlsx'):
             import openpyxl
             wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
@@ -420,16 +459,21 @@ async def upload_validation_file(
         # Calcul des stats sur le contenu complet avant troncature
         full_stats = compute_file_stats(content)
 
-        # Limitation de la taille du contenu pour le respect du rate-limit Gemini (max 15 000 char)
-        MAX_CHARACTERS = 15000
-        was_truncated = len(content) > MAX_CHARACTERS
-        full_stats["truncated_for_llm"] = was_truncated
-        
-        if was_truncated:
-            content = content[:MAX_CHARACTERS] + f"\n\n... [Contenu tronqué pour préserver les limites de jetons de l'API (max {MAX_CHARACTERS} caractères sur {full_stats['char_count']} au total)]"
+        is_rag_file = filename.endswith('.pdf')
+        if is_rag_file:
+            # Pas besoin de stocker le texte complet brut en mémoire ni de le tronquer pour le RAG
+            content = f"[Document PDF indexé dans la base vectorielle RAG de session. Total : {len(documents)} pages.]"
+            full_stats["truncated_for_llm"] = False
+        else:
+            # Limitation de la taille du contenu pour le respect du rate-limit Gemini (max 15 000 char)
+            MAX_CHARACTERS = 15000
+            was_truncated = len(content) > MAX_CHARACTERS
+            full_stats["truncated_for_llm"] = was_truncated
+            if was_truncated:
+                content = content[:MAX_CHARACTERS] + f"\n\n... [Contenu tronqué pour préserver les limites de jetons de l'API (max {MAX_CHARACTERS} caractères sur {full_stats['char_count']} au total)]"
 
         # Enregistrement dans la session correspondante
-        add_session_file(session_id, file.filename, content, full_stats=full_stats)
+        add_session_file(session_id, file.filename, content, full_stats=full_stats, is_rag=is_rag_file)
 
         return {
             "success": True,
