@@ -1,0 +1,210 @@
+{
+  "total_input_tokens": 205116,
+  "total_output_tokens": 29430,
+  "total_tokens": 234546,
+  "history": [
+    {
+      "timestamp": "2026-07-13T14:54:51.933440",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 2530,
+      "output_tokens": 711,
+      "total_tokens": 3241
+    },
+    {
+      "timestamp": "2026-07-13T14:56:14.755265",
+      "agent": "ValidationAgent",
+      "input_tokens": 8414,
+      "output_tokens": 1656,
+      "total_tokens": 10070
+    },
+    {
+      "timestamp": "2026-07-13T15:02:55.602626",
+      "agent": "ValidationAgent",
+      "input_tokens": 839,
+      "output_tokens": 168,
+      "total_tokens": 1007
+    },
+    {
+      "timestamp": "2026-07-13T15:08:28.957127",
+      "agent": "ValidationAgent",
+      "input_tokens": 12571,
+      "output_tokens": 1807,
+      "total_tokens": 14378
+    },
+    {
+      "timestamp": "2026-07-13T15:10:42.668723",
+      "agent": "ValidationAgent",
+      "input_tokens": 15554,
+      "output_tokens": 13949,
+      "total_tokens": 29503
+    },
+    {
+      "timestamp": "2026-07-13T15:26:45.514692",
+      "agent": "ValidationAgent",
+      "input_tokens": 7181,
+      "output_tokens": 117,
+      "total_tokens": 7298
+    },
+    {
+      "timestamp": "2026-07-13T15:45:02.108742",
+      "agent": "ValidationAgent",
+      "input_tokens": 483,
+      "output_tokens": 120,
+      "total_tokens": 603
+    },
+    {
+      "timestamp": "2026-07-13T23:05:17.118180",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 2526,
+      "output_tokens": 536,
+      "total_tokens": 3062
+    },
+    {
+      "timestamp": "2026-07-13T23:05:59.069638",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 2523,
+      "output_tokens": 534,
+      "total_tokens": 3057
+    },
+    {
+      "timestamp": "2026-07-13T23:10:25.999929",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 3139,
+      "output_tokens": 536,
+      "total_tokens": 3675
+    },
+    {
+      "timestamp": "2026-07-13T23:18:15.866011",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 3139,
+      "output_tokens": 536,
+      "total_tokens": 3675
+    },
+    {
+      "timestamp": "2026-07-14T00:55:34.210191",
+      "agent": "ValidationAgent",
+      "input_tokens": 7239,
+      "output_tokens": 386,
+      "total_tokens": 7625
+    },
+    {
+      "timestamp": "2026-07-14T00:55:59.294683",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 3133,
+      "output_tokens": 536,
+      "total_tokens": 3669
+    },
+    {
+      "timestamp": "2026-07-14T00:56:17.473078",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 3144,
+      "output_tokens": 1093,
+      "total_tokens": 4237
+    },
+    {
+      "timestamp": "2026-07-14T00:59:11.743142",
+      "agent": "ValidationAgent",
+      "input_tokens": 8125,
+      "output_tokens": 446,
+      "total_tokens": 8571
+    },
+    {
+      "timestamp": "2026-07-14T01:02:35.174270",
+      "agent": "ValidationAgent",
+      "input_tokens": 8126,
+      "output_tokens": 387,
+      "total_tokens": 8513
+    },
+    {
+      "timestamp": "2026-07-14T01:03:34.692675",
+      "agent": "ValidationAgent",
+      "input_tokens": 8380,
+      "output_tokens": 52,
+      "total_tokens": 8432
+    },
+    {
+      "timestamp": "2026-07-14T01:04:22.258846",
+      "agent": "ValidationAgent",
+      "input_tokens": 9965,
+      "output_tokens": 158,
+      "total_tokens": 10123
+    },
+    {
+      "timestamp": "2026-07-14T01:35:38.391609",
+      "agent": "ValidationAgent",
+      "input_tokens": 13319,
+      "output_tokens": 343,
+      "total_tokens": 13662
+    },
+    {
+      "timestamp": "2026-07-14T09:36:32.622839",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 2413,
+      "output_tokens": 829,
+      "total_tokens": 3242
+    },
+    {
+      "timestamp": "2026-07-14T09:37:32.946941",
+      "agent": "ValidationAgent",
+      "input_tokens": 9480,
+      "output_tokens": 43,
+      "total_tokens": 9523
+    },
+    {
+      "timestamp": "2026-07-14T09:38:18.068457",
+      "agent": "ValidationAgent",
+      "input_tokens": 12999,
+      "output_tokens": 629,
+      "total_tokens": 13628
+    },
+    {
+      "timestamp": "2026-07-14T09:39:24.072977",
+      "agent": "ValidationAgent",
+      "input_tokens": 13330,
+      "output_tokens": 262,
+      "total_tokens": 13592
+    },
+    {
+      "timestamp": "2026-07-14T10:09:09.733585",
+      "agent": "ValidationAgent",
+      "input_tokens": 14019,
+      "output_tokens": 712,
+      "total_tokens": 14731
+    },
+    {
+      "timestamp": "2026-07-16T09:33:32.334773",
+      "agent": "ValidationAgent",
+      "input_tokens": 387,
+      "output_tokens": 72,
+      "total_tokens": 459
+    },
+    {
+      "timestamp": "2026-07-16T09:34:56.301670",
+      "agent": "ValidationAgent",
+      "input_tokens": 5438,
+      "output_tokens": 646,
+      "total_tokens": 6084
+    },
+    {
+      "timestamp": "2026-07-16T09:36:01.610981",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 2411,
+      "output_tokens": 534,
+      "total_tokens": 2945
+    },
+    {
+      "timestamp": "2026-07-17T11:27:06.864473",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 2413,
+      "output_tokens": 534,
+      "total_tokens": 2947
+    },
+    {
+      "timestamp": "2026-07-17T11:43:44.548716",
+      "agent": "ValidationAgent",
+      "input_tokens": 21896,
+      "output_tokens": 1098,
+      "total_tokens": 22994
+    }
+  ]
+}

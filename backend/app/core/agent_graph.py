@@ -9,20 +9,25 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
 from typing_extensions import TypedDict
+from pydantic import SecretStr
 
 from app.services.log_parser import parse_trace_file_for_story
 from app.services.spec_loader import get_monitored_function_names, get_spec_context_for_functions
+from app.rag.retriever import query_specs
+from app.services.llm_util import invoke_llm_with_retry
+from app.services.token_tracker import extract_token_usage, record_usage
 
 # Avant : load_dotenv() sans argument -> cherche le .env dans le cwd, ce qui
 # casse si uvicorn n'est pas lancé exactement depuis la racine de backend/.
 # Maintenant : chemin explicite, indépendant du dossier depuis lequel on lance la commande.
 # NB: ajuste le nombre de .parent si agent_graph.py n'est pas dans app/core/ ou app/services/
 _ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
-load_dotenv(dotenv_path=_ENV_PATH)
+load_dotenv(dotenv_path=_ENV_PATH, override=True)
 
 # --- CONFIGURATION (avant : hardcodée, maintenant pilotable via .env) ---
-LOG_STORAGE_DIR = os.getenv("LOG_STORAGE_DIR", os.path.join("app", "storage"))
-GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash")
+_BACKEND_DIR = _ENV_PATH.parent
+LOG_STORAGE_DIR = os.getenv("LOG_STORAGE_DIR", str(_BACKEND_DIR / "app" / "storage"))
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.0-flash")
 MAX_SUSPICIOUS_TRANSACTIONS = int(os.getenv("MAX_SUSPICIOUS_TRANSACTIONS", "10"))
 MAX_FALLBACK_TRANSACTIONS = int(os.getenv("MAX_FALLBACK_TRANSACTIONS", "5"))
 
@@ -31,6 +36,11 @@ MAX_FALLBACK_TRANSACTIONS = int(os.getenv("MAX_FALLBACK_TRANSACTIONS", "5"))
 # Maintenant : on accepte les deux noms, avec une erreur explicite si aucun n'est trouvé
 # (plutôt qu'un ValidationError pydantic opaque à l'import du module).
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+
+# Affichage des valeurs résolues au démarrage
+_masked_key = GOOGLE_API_KEY[:6] + "..." if GOOGLE_API_KEY else "None"
+print(f"[STARTUP agent_graph.py] GEMINI_MODEL_NAME={GEMINI_MODEL_NAME}, GOOGLE_API_KEY={_masked_key} loaded from {_ENV_PATH}")
+
 if not GOOGLE_API_KEY:
     raise RuntimeError(
         f"Clé API Gemini introuvable. Vérifie que GOOGLE_API_KEY ou GEMINI_API_KEY "
@@ -51,7 +61,7 @@ class AgentState(TypedDict):
 llm = ChatGoogleGenerativeAI(
     model=GEMINI_MODEL_NAME,
     temperature=0,
-    google_api_key=GOOGLE_API_KEY,
+    google_api_key=SecretStr(GOOGLE_API_KEY),
 )
 
 
@@ -107,13 +117,8 @@ def parser_story_node(state: AgentState) -> Dict[str, Any]:
 def rag_spec_retriever_node(state: AgentState) -> Dict[str, Any]:
     """
     Étape 2 : extrait les fonctions en échec détectées par le parser et va
-    chercher leur VRAIE spécification dans Spec_PowerCARD.xlsx (stub local en
-    attendant la vraie base pgvector de YZ).
-
-    --- ZONE DE JONCTION AVEC LE RAG DE YZ ---
-    TODO: remplacer l'appel à get_spec_context_for_functions(...) par la vraie
-    requête vectorielle une fois la base de YZ prête :
-        context = vdb_client.similarity_search(query=" ".join(detected_errors), k=2)
+    chercher leur VRAIE spécification dans la base vectorielle pgvector
+    via query_specs(), ou fallback local si non disponible.
     """
     time.sleep(1)  # Temporisation de sécurité API
 
@@ -122,20 +127,27 @@ def rag_spec_retriever_node(state: AgentState) -> Dict[str, Any]:
     except Exception:
         log_data = []
 
-    # Avant : liste ["CardInSaf", "GetOriginalAuthData", ...] recopiée à la main,
-    # puis recherche par sous-chaîne dans le texte des alertes (source d'ambiguïté :
-    # "AuthRouting" matche aussi dans "GetAuthRouting").
-    # Maintenant : le parser renvoie directement les noms EXACTS des fonctions en
-    # échec (failed_functions), plus besoin de reparser du texte libre.
     monitored_functions = get_monitored_function_names()
 
     detected_errors = []
-    for tx in log_data:
-        for func in tx.get("failed_functions", []):
-            if func not in detected_errors:
-                detected_errors.append(func)
+    if isinstance(log_data, list):
+        for tx in log_data:
+            if isinstance(tx, dict):
+                for func in tx.get("failed_functions", []):
+                    if func not in detected_errors:
+                        detected_errors.append(func)
 
-    rag_extracted_rules = get_spec_context_for_functions(detected_errors) if detected_errors else ""
+    # Requête de la base vectorielle via le module partagé
+    rag_extracted_rules = ""
+    if detected_errors:
+        query_str = " ".join(detected_errors)
+        rag_extracted_rules = query_specs(query_str, k=2)
+        
+        # Transition en douceur : si la base vectorielle ne renvoie rien,
+        # fallback sur la recherche locale Excel classique
+        if not rag_extracted_rules.strip():
+            print("⚠️ Base vectorielle muette, utilisation du fallback local get_spec_context_for_functions")
+            rag_extracted_rules = get_spec_context_for_functions(detected_errors)
 
     if not rag_extracted_rules:
         rag_extracted_rules = (
@@ -179,13 +191,40 @@ def compliance_auditor_node(state: AgentState) -> Dict[str, Any]:
         )),
     ])
 
-    response = llm.invoke(auditor_prompt.format_messages(
+    # Invocation du modèle avec mécanisme de retry automatique
+    response = invoke_llm_with_retry(llm, auditor_prompt.format_messages(
         user_prompt=state.get("user_prompt"),
         log_data_json=state.get("log_data_json"),
         rag_context=state.get("rag_context"),
     ))
 
-    return {"final_response": response.content, "current_agent": "ComplianceAuditorAgent"}
+    # Tracking de tokens best-effort
+    try:
+        record_usage("ComplianceAuditor", extract_token_usage(response))
+    except Exception as token_err:
+        print(f"⚠️ Échec best-effort du tracking de tokens : {token_err}")
+
+    # Normalisation sécurisée de response.content
+    content = response.content
+    if isinstance(content, list):
+        print(f"⚠️ [WARNING] response.content is a list instead of string! Normalizing list: {content}")
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                parts.append(block.get("text", str(block)))
+            elif hasattr(block, "text"):
+                parts.append(block.text)
+            else:
+                parts.append(str(block))
+        normalized_response = "\n".join(parts)
+    elif content is None:
+        normalized_response = ""
+    else:
+        normalized_response = str(content)
+
+    return {"final_response": normalized_response, "current_agent": "ComplianceAuditorAgent"}
 
 
 # 2. Construction et compilation du Workflow LangGraph

@@ -13,6 +13,9 @@ load_dotenv()
 
 # Import de ton application LangGraph compilée
 from app.core.agent_graph import compliance_agent_app
+from app.core.validation_agent_graph import validation_agent_app
+from pydantic import BaseModel, Field
+from typing import List, Optional
 
 app = FastAPI(
     title="ComplianceVerifier API - HPS",
@@ -188,6 +191,24 @@ async def analyze_logs(
             story.append(Paragraph("Résultats de l'Analyse Agentique", section_style))
             
             # Traitement sécurisé du texte ligne par ligne
+            if isinstance(final_report_text, list):
+                print(f"⚠️ [WARNING] final_report_text is a list instead of string! Normalizing list: {final_report_text}")
+                parts = []
+                for block in final_report_text:
+                    if isinstance(block, str):
+                        parts.append(block)
+                    elif isinstance(block, dict):
+                        parts.append(block.get("text", str(block)))
+                    elif hasattr(block, "text"):
+                        parts.append(block.text)
+                    else:
+                        parts.append(str(block))
+                final_report_text = "\n".join(parts)
+            elif final_report_text is None:
+                final_report_text = ""
+            else:
+                final_report_text = str(final_report_text)
+
             for line in final_report_text.split("\n"):
                 if line.strip():
                     # 1. Échappement HTML global indispensable pour ReportLab
@@ -221,6 +242,24 @@ async def analyze_logs(
                     Paragraph("<b>Rapport d'Audit (Mode Restauré)</b>", styles_fail['Heading1']),
                     Spacer(1, 15)
                 ]
+                if isinstance(final_report_text, list):
+                    print(f"⚠️ [WARNING] final_report_text (fallback) is a list instead of string! Normalizing list: {final_report_text}")
+                    parts = []
+                    for block in final_report_text:
+                        if isinstance(block, str):
+                            parts.append(block)
+                        elif isinstance(block, dict):
+                            parts.append(block.get("text", str(block)))
+                        elif hasattr(block, "text"):
+                            parts.append(block.text)
+                        else:
+                            parts.append(str(block))
+                    final_report_text = "\n".join(parts)
+                elif final_report_text is None:
+                    final_report_text = ""
+                else:
+                    final_report_text = str(final_report_text)
+
                 for raw_line in final_report_text.split("\n"):
                     if raw_line.strip():
                         story_fail.append(Paragraph(html.escape(raw_line), styles_fail['Normal']))
@@ -258,3 +297,178 @@ async def download_pdf():
         status_code=404, 
         detail="Aucun rapport d'analyse disponible. Veuillez d'abord exécuter l'analyse."
     )
+
+# --- CLASSE DE REQUÊTE POUR L'AGENT 2 ---
+class ValidationRequest(BaseModel):
+    question: str
+    chat_history: Optional[List[dict]] = Field(default_factory=list)
+    session_id: Optional[str] = None
+
+# 5. Route d'interrogation de l'Agent 2
+@app.post("/api/v1/validation/ask")
+async def ask_validation_agent(request: ValidationRequest):
+    """
+    Interroge l'Agent 2 pour poser une question sur les spécifications PowerCARD.
+    """
+    question = request.question.strip()
+    if not question:
+        raise HTTPException(
+            status_code=400, 
+            detail="La question ne peut pas être vide."
+        )
+
+    try:
+        inputs = {
+            "user_question": question,
+            "chat_history": request.chat_history,
+            "rag_context": "",
+            "final_response": "",
+            "session_id": request.session_id or "",
+            "sources": []
+        }
+        
+        # Invocation du graphe de validation
+        result = validation_agent_app.invoke(inputs)
+        
+        final_response = result.get("final_response", "")
+        
+        # Normalisation défensive au niveau du controleur API
+        if isinstance(final_response, list):
+            print(f"⚠️ [WARNING] final_response in ask_validation_agent is a list! Normalizing list: {final_response}")
+            parts = []
+            for block in final_response:
+                if isinstance(block, str):
+                    parts.append(block)
+                elif isinstance(block, dict):
+                    parts.append(block.get("text", str(block)))
+                elif hasattr(block, "text"):
+                    parts.append(block.text)
+                else:
+                    parts.append(str(block))
+            final_response = "\n".join(parts)
+        elif final_response is None:
+            final_response = ""
+        else:
+            final_response = str(final_response)
+
+        # Utilisation des sources structurées définies par retriever_node
+        raw_sources = result.get("sources", [])
+        sources = [s["label"] for s in raw_sources] if raw_sources else []
+ 
+        return {
+            "response": final_response,
+            "sources": sources
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erreur lors de l'exécution de l'agent de validation : {str(e)}"
+        )
+
+# 6. Route d'upload de fichiers éphémères pour l'Agent 2
+@app.post("/api/v1/validation/upload")
+async def upload_validation_file(
+    file: UploadFile = File(...),
+    session_id: str = Form(...)
+):
+    """
+    Reçoit un fichier (.TXT, .PDF, .XLSX), extrait son texte brut, 
+    et l'enregistre en mémoire sous le session_id fourni.
+    """
+    filename = file.filename.lower()
+    if not (filename.endswith('.txt') or filename.endswith('.pdf') or filename.endswith('.xlsx')):
+        raise HTTPException(
+            status_code=400,
+            detail="Seuls les formats de fichiers .TXT, .PDF et .XLSX sont supportés."
+        )
+
+    try:
+        import io
+        from app.services.session_storage import add_session_file, compute_file_stats
+        
+        file_bytes = await file.read()
+        content = ""
+
+        # Extraction de texte par type de fichier
+        if filename.endswith('.txt'):
+            content = file_bytes.decode("utf-8", errors="ignore")
+            
+        elif filename.endswith('.pdf'):
+            import pypdf
+            pdf_reader = pypdf.PdfReader(io.BytesIO(file_bytes))
+            pages_text = []
+            for idx, page in enumerate(pdf_reader.pages, 1):
+                page_text = page.extract_text() or ""
+                pages_text.append(f"[Page {idx}]\n{page_text}")
+            content = "\n\n".join(pages_text)
+            
+        elif filename.endswith('.xlsx'):
+            import openpyxl
+            wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+            sheet_blocks = []
+            for sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+                sheet_blocks.append(f"--- Onglet Excel : {sheet_name} ---")
+                for r_idx, row in enumerate(ws.iter_rows(values_only=True), 1):
+                    # Convertit la ligne en texte si non vide
+                    row_str = " | ".join([str(val).strip() for val in row if val is not None])
+                    if row_str.strip():
+                        sheet_blocks.append(f"Ligne {r_idx}: {row_str}")
+            content = "\n".join(sheet_blocks)
+
+        # Calcul des stats sur le contenu complet avant troncature
+        full_stats = compute_file_stats(content)
+
+        # Limitation de la taille du contenu pour le respect du rate-limit Gemini (max 15 000 char)
+        MAX_CHARACTERS = 15000
+        was_truncated = len(content) > MAX_CHARACTERS
+        full_stats["truncated_for_llm"] = was_truncated
+        
+        if was_truncated:
+            content = content[:MAX_CHARACTERS] + f"\n\n... [Contenu tronqué pour préserver les limites de jetons de l'API (max {MAX_CHARACTERS} caractères sur {full_stats['char_count']} au total)]"
+
+        # Enregistrement dans la session correspondante
+        add_session_file(session_id, file.filename, content, full_stats=full_stats)
+
+        return {
+            "success": True,
+            "filename": file.filename,
+            "message": "Fichier éphémère extrait et chargé dans la session avec succès."
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Échec de l'extraction ou du stockage du fichier : {str(e)}"
+        )
+
+# 7. Endpoint d'usage de tokens
+@app.get("/api/v1/usage/summary")
+def get_tokens_usage_summary():
+    """
+    Retourne la consommation cumulée de tokens, le budget et le solde restant.
+    """
+    try:
+        from app.services.token_tracker import get_usage_summary
+        return get_usage_summary()
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Échec de la récupération du résumé de consommation : {str(e)}"
+        )
+
+@app.get("/api/v1/usage/history")
+def get_tokens_usage_history(limit: int = 50):
+    """
+    Retourne l'historique des appels LLM et de la consommation de jetons associée.
+    """
+    try:
+        from app.services.token_tracker import get_usage_history
+        return get_usage_history(limit)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Échec de la récupération de l'historique de consommation : {str(e)}"
+        )
+

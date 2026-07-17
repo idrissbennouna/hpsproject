@@ -1,6 +1,8 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import axios from "axios";
 import Markdown from "react-markdown";
+import ValidationAgentPanel from "./ValidationAgentPanel";
+import TokenUsageWidget from "./components/TokenUsageWidget";
 import "./App.css";
 
 function App() {
@@ -18,6 +20,21 @@ function App() {
   // States for Documentation RAG module
   const [docQuery, setDocQuery] = useState("");
   const [docResult, setDocResult] = useState("");
+
+  const [tokenUsage, setTokenUsage] = useState({ used: 0, budget: 1000000, remaining: 1000000, percentage: 0 });
+
+  const fetchTokenUsage = async () => {
+    try {
+      const response = await axios.get("http://127.0.0.1:8000/api/v1/usage/summary");
+      setTokenUsage(response.data);
+    } catch (err) {
+      console.error("Erreur lors de la récupération de la consommation de tokens :", err);
+    }
+  };
+
+  useEffect(() => {
+    fetchTokenUsage();
+  }, []);
 
   const handleFileChange = (e) => {
     setFile(e.target.files[0]);
@@ -54,6 +71,7 @@ function App() {
 
       setResult(response.data.analysis_report || response.data);
       setActiveAgent("FINISH");
+      fetchTokenUsage();
     } catch (err) {
       setError(err.response?.data?.detail || "Une erreur est survenue lors de l'analyse agentique.");
       setActiveAgent("Error");
@@ -114,6 +132,7 @@ function App() {
           >
              Agent Documentaire (RAG)
           </button>
+          <TokenUsageWidget usage={tokenUsage} />
         </nav>
 
         <div className="sidebar-footer">
@@ -144,6 +163,13 @@ function App() {
               {/* Panneau de configuration à gauche */}
               <div className="card">
                 <h3 className="card-title"> Configuration de l'Analyse</h3>
+                
+                {tokenUsage.remaining === 0 && (
+                  <div className="warning-box" style={{ marginBottom: "18px", background: "rgba(220, 38, 38, 0.08)", color: "#b91c1c", border: "1px solid rgba(220, 38, 38, 0.2)", padding: "12px", borderRadius: "10px", fontSize: "13px", display: "flex", gap: "8px", alignItems: "center" }}>
+                    <span>⚠️</span>
+                    <span><strong>Budget de tokens dépassé !</strong> Les requêtes continuent de fonctionner mais le quota virtuel défini est épuisé.</span>
+                  </div>
+                )}
                 
                 <div className="form-group">
                   <label className="label">Fichier de traces réelles (.TXT) :</label>
@@ -206,37 +232,9 @@ function App() {
           </div>
         )}
 
-        {/* ONGLET 2 : AGENT DE DOCUMENTATION */}
+        {/* ONGLET 2 : AGENT DE DOCUMENTATION (RAG) */}
         {activeTab === "docs" && (
-          <div>
-            <div className="header-row">
-              <div>
-                <h2 className="section-title">Base Documentaire Intégrée</h2>
-                <p className="section-desc font-medium">Interrogation intelligente des spécifications, guides d'implémentation et fichiers Excel.</p>
-              </div>
-            </div>
-            
-            <div className="card">
-              <h3 className="card-title"> Requête Spécifications (Module RAG)</h3>
-              <div className="form-group">
-                <label className="label">Posez une question sur le dictionnaire des données ou les messages PowerCARD :</label>
-                <input 
-                  type="text" 
-                  className="input" 
-                  placeholder="Ex: Quelle table gère la retransmission SAF en cas de timeout ?" 
-                  value={docQuery}
-                  onChange={(e) => setDocQuery(e.target.value)}
-                />
-              </div>
-              <button className="action-btn" onClick={runDocQuery}>Interroger la documentation</button>
-
-              {docResult && (
-                <div className="markdown-render" style={{ marginTop: "24px", borderTop: "1px solid rgba(255, 255, 255, 0.08)", paddingTop: "24px" }}>
-                  <Markdown>{docResult}</Markdown>
-                </div>
-              )}
-            </div>
-          </div>
+          <ValidationAgentPanel onAnswerSuccess={fetchTokenUsage} isBudgetExceeded={tokenUsage.remaining === 0} />
         )}
 
       </main>

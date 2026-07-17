@@ -16,11 +16,12 @@ Tant que la base pgvector (RAG de YZ) n'est pas branchée, ce module sert de
 import os
 import functools
 import openpyxl
+from pathlib import Path
 
-
+_BACKEND_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_SPEC_PATH = os.getenv(
     "POWERCARD_SPEC_PATH",
-    os.path.join("app", "storage", "Spec_PowerCARD.xlsx"),
+    str(_BACKEND_DIR / "app" / "storage" / "Spec_PowerCARD.xlsx"),
 )
 
 
