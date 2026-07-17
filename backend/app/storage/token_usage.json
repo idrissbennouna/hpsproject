@@ -1,7 +1,7 @@
 {
-  "total_input_tokens": 294155,
-  "total_output_tokens": 33130,
-  "total_tokens": 327285,
+  "total_input_tokens": 298100,
+  "total_output_tokens": 37745,
+  "total_tokens": 335845,
   "history": [
     {
       "timestamp": "2026-07-13T14:54:51.933440",
@@ -275,6 +275,13 @@
       "input_tokens": 3185,
       "output_tokens": 431,
       "total_tokens": 3616
+    },
+    {
+      "timestamp": "2026-07-17T15:28:57.042823",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 3945,
+      "output_tokens": 4615,
+      "total_tokens": 8560
     }
   ]
 }

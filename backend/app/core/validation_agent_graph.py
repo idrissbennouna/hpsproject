@@ -178,7 +178,9 @@ def answerer_node(state: ValidationState) -> Dict[str, Any]:
             "3. Prends en compte l'historique de la conversation pour comprendre le contexte des questions de suivi.\n"
             "4. Formate tes réponses dans un Markdown clair, soigné, structuré et professionnel (tableaux, listes à puces si approprié).\n"
             "5. Réponds en français.\n"
-            "6. Si une métadonnée est fournie avec une mention du type '[Métadonnées calculées automatiquement...]', tu DOIS utiliser cette valeur telle quelle. Ne recalcule/ne recompte jamais toi-même à partir du texte brut : tu n'es pas fiable pour compter du texte (lignes, caractères, etc.). Cite uniquement et mot pour mot la valeur donnée dans ces métadonnées.\n\n"
+            "6. Si une métadonnée est fournie avec une mention du type '[Métadonnées calculées automatiquement...]', tu DOIS utiliser cette valeur telle quelle. Ne recalcule/ne recompte jamais toi-même à partir du texte brut : tu n'es pas fiable pour compter du texte (lignes, caractères, etc.). Cite uniquement et mot pour mot la valeur donnée dans ces métadonnées.\n"
+            "7. Tu peux également répondre à des questions sur les documents de spécification ou guides techniques (fichiers PDF, Excel, ou textes) que l'utilisateur a uploadés pour cette session de test (présents dans la section des documents éphémères du RAG Context).\n"
+            "8. Aide l'utilisateur à comprendre les détails des transactions comme les champs [FLD 037] (RRN) et [FLD 039] (Response Code pour l'approbation) ou les fonctions exécutées avec succès (OK) par rapport aux échecs.\n\n"
             "RAG Context :\n"
             "{rag_context}"
         )),

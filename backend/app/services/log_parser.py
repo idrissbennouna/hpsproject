@@ -20,10 +20,13 @@ RE_CARD_NUMBER = re.compile(r"CARD_NUMBER\}\s*\d+\s+(\S+)")
 
 # Format des dumps ISO bruts (DumpIso / DumpVisa), différent du bloc TLV ci-dessus :
 #   - FLD (011) : (006) : [593604]
+#   - FLD (037) : (012) : [024500045686]
 #   - FLD (039) : (003) : [116]
 RE_FLD011_DUMP = re.compile(r"FLD\s*\(011\)\s*:\s*\(\d+\)\s*:\s*\[(\d+)\]")
+RE_FLD037_DUMP = re.compile(r"FLD\s*\(037\).*\[(\w+)\]")
 RE_FLD039_DUMP = re.compile(r"FLD\s*\(039\).*\[(\w+)\]")
 RE_MTI_1110 = re.compile(r"M\.T\.I\s*:\s*1110")
+
 
 # Chaque ligne de trace commence par :  <date> <heure> <pid> <SESSION>|<niveau>| <message>
 # ex: "2411 191711179 38142014 00005657|5| Start IsoToTlv ()"
@@ -101,13 +104,21 @@ def _build_response_code_map(file_path: str) -> dict:
 
 def _new_tx() -> dict:
     return {
-        "identifiers": {"transaction_id": None, "stan": None, "pan": None},
+        "identifiers": {
+            "transaction_id": None, 
+            "stan": None, 
+            "pan": None,
+            "rrn": None,
+            "response_code": None
+        },
         "events": [],
         "alerts": [],
         "failed_functions": [],
+        "successful_functions": [],
         "is_heartbeat": False,
         "_last_event": None,  # pour dédupliquer les événements consécutifs identiques
     }
+
 
 
 def _add_event(tx: dict, text: str) -> None:
@@ -172,6 +183,7 @@ def parse_trace_file_for_story(file_path: str, spec_path: str = None) -> list:
             "chronology": "\n".join(f"- {ev}" for ev in tx["events"]),
             "alerts_found": list(tx["alerts"]),
             "failed_functions": list(tx["failed_functions"]),
+            "successful_functions": list(tx["successful_functions"]),
             "is_heartbeat": final_is_heartbeat,
         })
 
@@ -222,6 +234,19 @@ def parse_trace_file_for_story(file_path: str, spec_path: str = None) -> list:
                 if match:
                     tx["identifiers"]["pan"] = match.group(1)
 
+                match = RE_FLD037_DUMP.search(line)
+                if match:
+                    val_rrn = match.group(1)
+                    tx["identifiers"]["rrn"] = val_rrn
+                    _add_event(tx, f"Champ [FLD 037] (Retrieval Reference Number) détecté : {val_rrn}.")
+
+                match = RE_FLD039_DUMP.search(line)
+                if match:
+                    val_rc = match.group(1)
+                    tx["identifiers"]["response_code"] = val_rc
+                    status = "Approuvée" if val_rc in ["00", "000"] else f"Déclinée (Code: {val_rc})"
+                    _add_event(tx, f"Champ [FLD 039] (Response Code) détecté : {val_rc} ({status}).")
+
                 # --- 1. RECONSTITUTION DE LA STORY (jalons structurels ISO/TLV) ---
                 # On ne déclenche que sur la ligne "End ..." (fin d'exécution réelle),
                 # pas sur "Start ..." : avant, les deux matchaient le même mot-clé et
@@ -236,19 +261,32 @@ def parse_trace_file_for_story(file_path: str, spec_path: str = None) -> list:
                 if is_end_line and "LoadIssuerInfo" in line:
                     _add_event(tx, "Traitement : Chargement des paramètres de la banque émettrice.")
 
-                # --- 2. SURVEILLANCE DES ALERTES (pilotée dynamiquement par Spec_PowerCARD.xlsx) ---
-                for func_name, pattern in function_patterns.items():
+                # --- 2. SURVEILLANCE ET CHRONOLOGIE DES FONCTIONS MÉTIER (SUCCÈS OU ÉCHEC) ---
+                # Piloté dynamiquement par Spec_PowerCARD.xlsx
+                monitored_functions = get_monitored_function_names(spec_path)
+                for func_name in monitored_functions:
                     if func_name not in line:
                         continue
-                    match = pattern.search(line)
-                    if match:
-                        code = match.group(1)
-                        anomalie = f"{func_name}() a échoué (résultat : {code})."
-                        _add_event(tx, f"ALERTE : {anomalie}")
-                        tx["alerts"].append(anomalie)
-                        if func_name not in tx["failed_functions"]:
-                            tx["failed_functions"].append(func_name)
-                    break  # une ligne de log ne référence qu'une seule fonction métier
+                    
+                    if "End" in line:
+                        pattern = function_patterns.get(func_name)
+                        match = pattern.search(line) if pattern else None
+                        
+                        if match:
+                            code = match.group(1)
+                            anomalie = f"{func_name}() a échoué (résultat : {code})."
+                            _add_event(tx, f"ALERTE : {anomalie}")
+                            tx["alerts"].append(anomalie)
+                            if func_name not in tx["failed_functions"]:
+                                tx["failed_functions"].append(func_name)
+                        else:
+                            # C'est un succès (ligne End et aucun motif d'erreur NOK / négatif détecté)
+                            res_match = re.search(rf"{re.escape(func_name)}\s*\(\s*([^)]*)\)", line)
+                            res_str = res_match.group(1).strip() if res_match and res_match.group(1) else "OK"
+                            _add_event(tx, f"Fonction {func_name}() exécutée avec succès (résultat : {res_str}).")
+                            if func_name not in tx["successful_functions"]:
+                                tx["successful_functions"].append(func_name)
+                        break  # une ligne de log ne référence qu'une seule fonction métier
 
         # Sauvegarde de toutes les transactions encore ouvertes en fin de fichier
         for tx in sessions.values():
@@ -274,10 +312,18 @@ def parse_and_format_log_file(file_path: str) -> str:
         idents = tx.get("identifiers", {})
         chronology = tx.get("chronology", "")
         alerts = tx.get("alerts_found", [])
+        
+        rrn = idents.get("rrn") or "N/A"
+        rc = idents.get("response_code") or "N/A"
+        status = "Approuvée" if rc in ["00", "000"] else f"Déclinée (Code: {rc})" if rc != "N/A" else "Inconnue"
+        
         blocks.append(
             f"=== Transaction {idx} ===\n"
             f"STAN: {idents.get('stan') or 'N/A'} | PAN: {idents.get('pan') or 'N/A'} | ID: {idents.get('transaction_id') or 'N/A'}\n"
+            f"RRN [FLD 037]: {rrn} | Code Réponse [FLD 039]: {rc} ({status})\n"
             f"Chronologie:\n{chronology}\n"
-            f"Alertes: {', '.join(alerts) if alerts else 'Aucune'}"
+            f"Alertes: {', '.join(alerts) if alerts else 'Aucune'}\n"
+            f"Fonctions OK: {', '.join(tx.get('successful_functions', [])) if tx.get('successful_functions') else 'Aucune'}"
         )
-    return "\n\n".join(blocks)
+    return "\n\n".join(blocks)
+
