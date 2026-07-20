@@ -1,7 +1,7 @@
 {
-  "total_input_tokens": 298100,
-  "total_output_tokens": 37745,
-  "total_tokens": 335845,
+  "total_input_tokens": 309698,
+  "total_output_tokens": 48274,
+  "total_tokens": 357972,
   "history": [
     {
       "timestamp": "2026-07-13T14:54:51.933440",
@@ -282,6 +282,27 @@
       "input_tokens": 3945,
       "output_tokens": 4615,
       "total_tokens": 8560
+    },
+    {
+      "timestamp": "2026-07-17T15:48:56.948006",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 3974,
+      "output_tokens": 4093,
+      "total_tokens": 8067
+    },
+    {
+      "timestamp": "2026-07-20T10:28:19.097351",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 3944,
+      "output_tokens": 4652,
+      "total_tokens": 8596
+    },
+    {
+      "timestamp": "2026-07-20T11:22:49.347355",
+      "agent": "ValidationAgent",
+      "input_tokens": 3680,
+      "output_tokens": 1784,
+      "total_tokens": 5464
     }
   ]
 }

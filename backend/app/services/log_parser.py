@@ -135,11 +135,8 @@ def parse_trace_file_for_story(file_path: str, spec_path: str = None) -> list:
     all_transactions = []
     function_patterns = _build_function_failure_patterns(spec_path)
 
-    try:
-        response_code_map = _build_response_code_map(file_path)
-    except Exception:
-        response_code_map = {}
-
+    response_code_map = {}
+    pending_mti_sessions = {}
     sessions = {}  # session_id -> transaction en cours pour CETTE session uniquement
 
     def save(tx):
@@ -199,7 +196,21 @@ def parse_trace_file_for_story(file_path: str, spec_path: str = None) -> list:
                 if session_id is None:
                     continue
 
-                # --- DÉTECTION D'UNE NOUVELLE TRANSACTION (scindée par session) ---
+                # --- 1. DÉTECTION ET ENREGISTREMENT DES CODES RÉPONSES MTI 1110 (Single Pass) ---
+                if RE_MTI_1110.search(line):
+                    pending_mti_sessions[session_id] = {"stan": None, "resp": None}
+                elif session_id in pending_mti_sessions:
+                    match_stan = RE_FLD011_DUMP.search(line)
+                    if match_stan:
+                        pending_mti_sessions[session_id]["stan"] = match_stan.group(1)
+                    match_resp = RE_FLD039_DUMP.search(line)
+                    if match_resp:
+                        pending_mti_sessions[session_id]["resp"] = match_resp.group(1)
+                    if pending_mti_sessions[session_id]["stan"] and pending_mti_sessions[session_id]["resp"]:
+                        response_code_map[pending_mti_sessions[session_id]["stan"]] = pending_mti_sessions[session_id]["resp"]
+                        del pending_mti_sessions[session_id]
+
+                # --- 2. DÉTECTION D'UNE NOUVELLE TRANSACTION (scindée par session) ---
                 if "Start DumpVisa()" in line:
                     previous_tx = sessions.get(session_id)
                     if previous_tx is not None:

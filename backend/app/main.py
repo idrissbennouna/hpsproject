@@ -4,6 +4,7 @@ import html
 import re
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
@@ -78,7 +79,7 @@ async def analyze_logs(
             "final_response": ""
         }
         
-        execution_result = compliance_agent_app.invoke(graph_inputs)
+        execution_result = await run_in_threadpool(compliance_agent_app.invoke, graph_inputs)
         
         final_report_text = execution_result.get("final_response", "Aucun rapport généré.")
         agent_assigned = execution_result.get("current_agent", "ComplianceAuditorAgent")

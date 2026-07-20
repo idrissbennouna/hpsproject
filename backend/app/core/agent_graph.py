@@ -120,8 +120,6 @@ def rag_spec_retriever_node(state: AgentState) -> Dict[str, Any]:
     chercher leur VRAIE spécification dans la base vectorielle pgvector
     via query_specs(), ou fallback local si non disponible.
     """
-    time.sleep(1)  # Temporisation de sécurité API
-
     try:
         log_data = json.loads(state.get("log_data_json", "[]"))
     except Exception:
