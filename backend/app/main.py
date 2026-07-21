@@ -369,42 +369,51 @@ async def ask_validation_agent(request: ValidationRequest):
 
 def _process_and_index_pdf(file_bytes: bytes, filename: str, session_id: str) -> dict:
     import io
-    import pypdf
+    import pdfplumber
     from langchain_core.documents import Document
     from langchain_text_splitters import RecursiveCharacterTextSplitter
-    from app.rag.retriever import get_session_vectorstore, delete_session_documents, batch_add_documents
-    from app.core.config import MAX_PDF_PAGES, EMBEDDING_BATCH_SIZE
+    from app.rag.retriever import get_session_vectorstore, delete_session_documents, batch_add_documents, QuotaExhaustedError
+    from app.core.config import MAX_PDF_PAGES, PDF_CHUNK_SIZE, PDF_CHUNK_OVERLAP, EMBEDDING_BATCH_SIZE, EMBEDDING_BATCH_DELAY_SECONDS
 
-    pdf_reader = pypdf.PdfReader(io.BytesIO(file_bytes))
-    total_pages = len(pdf_reader.pages)
-
-    if total_pages > MAX_PDF_PAGES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Le nombre de pages ({total_pages}) dépasse la limite autorisée de {MAX_PDF_PAGES} pages."
-        )
-
-    # 1. Toujours supprimer les anciens documents vectoriels de la session en premier
-    delete_session_documents(session_id)
-
-    # 2. Extraction du texte page par page
-    pages_text = []
     documents = []
     pages_with_text = 0
 
-    for idx, page in enumerate(pdf_reader.pages, 1):
-        page_text = page.extract_text() or ""
-        if page_text.strip():
-            pages_with_text += 1
-            pages_text.append(f"[Page {idx}]\n{page_text}")
-            documents.append(Document(
-                page_content=page_text,
-                metadata={
-                    "session_id": session_id,
-                    "source": filename,
-                    "page": idx
-                }
-            ))
+    try:
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            total_pages = len(pdf.pages)
+
+            if total_pages > MAX_PDF_PAGES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Le nombre de pages ({total_pages}) dépasse la limite autorisée de {MAX_PDF_PAGES} pages."
+                )
+
+            # 1. Toujours supprimer les anciens documents vectoriels de la session en premier
+            delete_session_documents(session_id)
+
+            # 2. Extraction du texte page par page avec pdfplumber
+            for idx, page in enumerate(pdf.pages, 1):
+                page_text = page.extract_text() or ""
+                if page_text.strip():
+                    pages_with_text += 1
+                    documents.append(Document(
+                        page_content=page_text,
+                        metadata={
+                            "session_id": session_id,
+                            "source": filename,
+                            "page": idx
+                        }
+                    ))
+    except HTTPException:
+        raise
+    except Exception as pdf_err:
+        return {
+            "success": False,
+            "filename": filename,
+            "message": f"Fichier PDF invalide ou illisible : {pdf_err}",
+            "total_pages": 0,
+            "extracted_text": ""
+        }
 
     # 3. Détection des PDF scannés / images sans texte extractible
     if total_pages > 0 and (pages_with_text == 0 or (pages_with_text / total_pages) < 0.5):
@@ -420,12 +429,33 @@ def _process_and_index_pdf(file_bytes: bytes, filename: str, session_id: str) ->
             "extracted_text": ""
         }
 
+
     # 4. Decoupage en chunks et ingestion par lots
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=PDF_CHUNK_SIZE, chunk_overlap=PDF_CHUNK_OVERLAP)
     chunks = text_splitter.split_documents(documents)
 
     session_db = get_session_vectorstore()
-    batch_add_documents(session_db, chunks, batch_size=EMBEDDING_BATCH_SIZE)
+    try:
+        indexed_count = batch_add_documents(
+            session_db,
+            chunks,
+            batch_size=EMBEDDING_BATCH_SIZE,
+            inter_batch_delay=EMBEDDING_BATCH_DELAY_SECONDS,
+            session_id=session_id
+        )
+        print(f"[INDEX_SUCCESS] Session '{session_id}': {indexed_count}/{len(chunks)} chunks indexés avec succès.")
+    except QuotaExhaustedError as qe:
+        return {
+            "success": False,
+            "filename": filename,
+            "message": str(qe)
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "filename": filename,
+            "message": f"Erreur lors de l'indexation vectorielle du document PDF : {str(e)}"
+        }
 
     content = f"[Document PDF indexé dans la base vectorielle RAG de session. Total : {total_pages} pages.]"
     return {
@@ -435,6 +465,8 @@ def _process_and_index_pdf(file_bytes: bytes, filename: str, session_id: str) ->
         "total_pages": total_pages,
         "extracted_text": content
     }
+
+
 
 
 # 6. Route d'upload de fichiers éphémères pour l'Agent 2

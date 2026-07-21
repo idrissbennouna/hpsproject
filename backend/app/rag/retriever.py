@@ -76,34 +76,144 @@ def ensure_session_id_index():
     except Exception as e:
         print(f"[WARN] Remarque indexation pgvector (optionnelle si table non creee) : {e}")
 
-def batch_add_documents(vectorstore, documents: list, batch_size: int = 50, max_retries: int = 3, initial_delay: float = 1.0):
+def count_session_chunks(session_id: str) -> dict:
+    """Diagnostic helper: compte les chunks présents pour une session_id donnée et liste les session_ids en base."""
+    try:
+        from sqlalchemy import create_engine, text
+        engine = create_engine(CONNECTION_STRING)
+        with engine.connect() as conn:
+            session_count = conn.execute(
+                text("SELECT COUNT(*) FROM langchain_pg_embedding WHERE cmetadata->>'session_id' = :session_id"),
+                {"session_id": session_id}
+            ).scalar()
+            
+            distinct_sessions_res = conn.execute(
+                text("SELECT DISTINCT cmetadata->>'session_id' FROM langchain_pg_embedding WHERE cmetadata->>'session_id' IS NOT NULL")
+            ).fetchall()
+            distinct_sessions = [row[0] for row in distinct_sessions_res if row[0]]
+            
+            return {
+                "session_id": session_id,
+                "chunk_count": session_count,
+                "all_active_session_ids": distinct_sessions
+            }
+    except Exception as e:
+        print(f"[WARN] Diagnostic count_session_chunks failed: {e}")
+        return {"session_id": session_id, "chunk_count": 0, "all_active_session_ids": [], "error": str(e)}
+
+def search_session_chunks_keyword(session_id: str, keyword: str, limit: int = 5) -> list:
+    """Effectue une recherche textuelle directe ILIKE dans langchain_pg_embedding filtrée par session_id."""
+    try:
+        from sqlalchemy import create_engine, text
+        from langchain_core.documents import Document
+        engine = create_engine(CONNECTION_STRING)
+        with engine.connect() as conn:
+            query = text(
+                "SELECT document, cmetadata FROM langchain_pg_embedding "
+                "WHERE cmetadata->>'session_id' = :session_id "
+                "AND document ILIKE :pattern "
+                "LIMIT :limit"
+            )
+            results = conn.execute(query, {
+                "session_id": session_id,
+                "pattern": f"%{keyword}%",
+                "limit": limit
+            }).fetchall()
+            
+            documents = []
+            for row in results:
+                doc_text, meta = row[0], row[1]
+                import json
+                if isinstance(meta, str):
+                    meta = json.loads(meta)
+                documents.append(Document(page_content=doc_text, metadata=meta or {}))
+            return documents
+    except Exception as e:
+        print(f"[WARN] Hybrid keyword search failed for session '{session_id}', keyword '{keyword}': {e}")
+        return []
+
+class QuotaExhaustedError(Exception):
+
+    """Exception levée lorsque le quota API d'embeddings Gemini est totalement épuisé."""
+    pass
+
+def _is_rate_limit_error(exception: Exception) -> bool:
+    """Détermine si l'erreur est un 429 RESOURCE_EXHAUSTED / Rate Limit."""
+    err_str = str(exception).lower()
+    return "429" in err_str or "resource_exhausted" in err_str or "quota" in err_str or "rate limit" in err_str
+
+def batch_add_documents(
+    vectorstore,
+    documents: list,
+    batch_size: int = None,
+    inter_batch_delay: float = None,
+    max_retries: int = 5,
+    initial_delay: float = 5.0,
+    session_id: str = None
+):
     """
-    Ingère les documents par lots (batches) dans le vectorstore avec retry/backoff exponentiel
-    et affichage de la progression (ex: 'Embedded 300/1400 chunks').
+    Ingère les documents par lots (batches) dans le vectorstore avec retry/backoff exponentiel sur 429
+    et affichage de la progression.
     """
     import time
+    from tenacity import Retrying, stop_after_attempt, wait_exponential, retry_if_exception
+    from app.core.config import EMBEDDING_BATCH_SIZE, EMBEDDING_BATCH_DELAY_SECONDS
+
+    if batch_size is None:
+        batch_size = EMBEDDING_BATCH_SIZE
+    if inter_batch_delay is None:
+        inter_batch_delay = EMBEDDING_BATCH_DELAY_SECONDS
+
     total_chunks = len(documents)
     if total_chunks == 0:
-        return
+        return 0
 
-    print(f"[BATCH] Debut de l'ingestion de {total_chunks} chunks par lots de {batch_size}...")
-    for i in range(0, total_chunks, batch_size):
-        batch = documents[i:i + batch_size]
-        attempt = 0
-        while attempt < max_retries:
+    print(f"[BATCH] Début de l'ingestion de {total_chunks} chunks par lots de {batch_size} (délai inter-lot: {inter_batch_delay}s)...")
+    
+    try:
+        for i in range(0, total_chunks, batch_size):
+            batch = documents[i:i + batch_size]
+            
+            retryer = Retrying(
+                stop=stop_after_attempt(max_retries),
+                wait=wait_exponential(multiplier=1.0, min=initial_delay, max=60.0),
+                retry=retry_if_exception(_is_rate_limit_error),
+                reraise=True
+            )
+            
             try:
-                vectorstore.add_documents(batch)
-                processed = min(i + batch_size, total_chunks)
-                print(f"[PROGRESS] Embedded {processed}/{total_chunks} chunks dans pgvector.")
-                break
+                for attempt in retryer:
+                    with attempt:
+                        if attempt.retry_state.attempt_number > 1:
+                            print(
+                                f"[WARN] tentative {attempt.retry_state.attempt_number}/{max_retries} pour le lot "
+                                f"{i//batch_size + 1}/{(total_chunks + batch_size - 1)//batch_size} suite à 429 / Rate Limit..."
+                            )
+                        vectorstore.add_documents(batch)
             except Exception as err:
-                attempt += 1
-                if attempt >= max_retries:
-                    print(f"[ERROR] Echec critique lors de l'ingestion du lot {i}-{i+len(batch)} apres {max_retries} essais: {err}")
-                    raise err
-                delay = initial_delay * (2 ** (attempt - 1))
-                print(f"[WARN] Erreur lors de l'ingestion du lot {i}-{i+len(batch)} (tentative {attempt}/{max_retries}): {err}. Pause de {delay:.1f}s...")
-                time.sleep(delay)
+                print(f"[ERROR] Échec critique lors de l'ingestion du lot {i}-{i+len(batch)} après retries: {err}")
+                if _is_rate_limit_error(err):
+                    raise QuotaExhaustedError(
+                        "Le quota de l'API Gemini pour les embeddings a été atteint. "
+                        "Réessayez plus tard ou contactez l'administrateur pour augmenter le quota (passage à un plan payant)."
+                    ) from err
+                raise err
+
+            processed = min(i + batch_size, total_chunks)
+            print(f"[PROGRESS] Embedded {processed}/{total_chunks} chunks dans pgvector.")
+            
+            if processed < total_chunks and inter_batch_delay > 0:
+                time.sleep(inter_batch_delay)
+
+        return total_chunks
+
+    except Exception as e:
+        if session_id:
+            print(f"[CLEANUP] Suppression du state partiel de la session {session_id} suite à une erreur...")
+            delete_session_documents(session_id)
+        raise e
+
+
 
 def delete_session_documents(session_id: str):
     """Supprime tous les documents associés à une session dans PGVector."""

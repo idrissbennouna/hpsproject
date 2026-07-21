@@ -84,6 +84,14 @@ def retriever_node(state: ValidationState) -> Dict[str, Any]:
 
     # 2. Contexte éphémère de la session s'il y en a un
     if session_id:
+        from app.rag.retriever import count_session_chunks, search_session_chunks_keyword
+        diag = count_session_chunks(session_id)
+        print(
+            f"[RETRIEVER_DIAG] Filter session_id: '{session_id}' | "
+            f"Chunks in DB for this session: {diag.get('chunk_count', 0)} | "
+            f"All active session_ids in DB: {diag.get('all_active_session_ids', [])}"
+        )
+
         session_files = get_session_files(session_id)
         if session_files:
             file_blocks = []
@@ -107,11 +115,44 @@ def retriever_node(state: ValidationState) -> Dict[str, Any]:
                         is_broad_query = any(kw in q_lower for kw in broad_keywords)
                         session_k = 16 if is_broad_query else 4
 
-                        relevant_docs = session_db.similarity_search(
+                        # 4. Hybrid Search: Vérification de motif spécifique (ex: Field 37, Champ 39, FLD 011, etc.)
+                        import re
+                        field_pattern = re.compile(r'(?:field|champ|fld)\s*0*(\d+)', re.IGNORECASE)
+                        field_matches = field_pattern.findall(question)
+
+                        keyword_docs = []
+                        if field_matches:
+                            for field_num in field_matches:
+                                # Chercher les motifs textuels probables : "Field 37", "Field37", "Champ 37", "FLD 037", "37"
+                                search_terms = [
+                                    f"Field {field_num}",
+                                    f"Field{field_num}",
+                                    f"Champ {field_num}",
+                                    f"Champ{field_num}",
+                                    f"FLD {field_num.zfill(3)}",
+                                    f"FLD{field_num.zfill(3)}",
+                                    f"FLD {field_num}"
+                                ]
+                                for term in search_terms:
+                                    found = search_session_chunks_keyword(session_id, term, limit=3)
+                                    if found:
+                                        keyword_docs.extend(found)
+
+                        semantic_docs = session_db.similarity_search(
                             search_query, 
                             k=session_k, 
                             filter={"session_id": session_id}
                         )
+
+                        # Fusion dédoublonnée (Keyword matches prioritaires)
+                        seen_contents = set()
+                        relevant_docs = []
+                        for doc in keyword_docs + semantic_docs:
+                            content_snippet = doc.page_content.strip()
+                            if content_snippet not in seen_contents:
+                                seen_contents.add(content_snippet)
+                                relevant_docs.append(doc)
+
                         if relevant_docs:
                             chunk_blocks = []
                             for idx, doc in enumerate(relevant_docs, 1):
@@ -126,6 +167,7 @@ def retriever_node(state: ValidationState) -> Dict[str, Any]:
                         content = f"Erreur lors de la recherche vectorielle RAG de session : {e}"
                 else:
                     content = file_info["content"]
+
                 
                 # Injection explicite des métadonnées calculées
                 truncation_note = (
