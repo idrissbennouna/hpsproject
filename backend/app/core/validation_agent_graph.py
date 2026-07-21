@@ -96,9 +96,20 @@ def retriever_node(state: ValidationState) -> Dict[str, Any]:
                     try:
                         from app.rag.retriever import get_session_vectorstore
                         session_db = get_session_vectorstore()
+
+                        # Détection d'intention pour requêtes globales/résumés
+                        broad_keywords = [
+                            "résume", "resume", "summarize", "summary", "overview", 
+                            "combien de", "toutes les", "tous les", "sommaire", "global",
+                            "structure", "chapitres", "sections", "présente", "presente"
+                        ]
+                        q_lower = question.lower()
+                        is_broad_query = any(kw in q_lower for kw in broad_keywords)
+                        session_k = 16 if is_broad_query else 4
+
                         relevant_docs = session_db.similarity_search(
                             search_query, 
-                            k=4, 
+                            k=session_k, 
                             filter={"session_id": session_id}
                         )
                         if relevant_docs:

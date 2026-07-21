@@ -1,7 +1,7 @@
 {
-  "total_input_tokens": 309698,
-  "total_output_tokens": 48274,
-  "total_tokens": 357972,
+  "total_input_tokens": 313380,
+  "total_output_tokens": 49638,
+  "total_tokens": 363018,
   "history": [
     {
       "timestamp": "2026-07-13T14:54:51.933440",
@@ -303,6 +303,20 @@
       "input_tokens": 3680,
       "output_tokens": 1784,
       "total_tokens": 5464
+    },
+    {
+      "timestamp": "2026-07-20T16:44:44.343965",
+      "agent": "ValidationAgent",
+      "input_tokens": 1205,
+      "output_tokens": 453,
+      "total_tokens": 1658
+    },
+    {
+      "timestamp": "2026-07-21T11:01:46.345830",
+      "agent": "ValidationAgent",
+      "input_tokens": 2477,
+      "output_tokens": 911,
+      "total_tokens": 3388
     }
   ]
 }

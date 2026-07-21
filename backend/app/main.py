@@ -367,6 +367,76 @@ async def ask_validation_agent(request: ValidationRequest):
             detail=f"Erreur lors de l'exécution de l'agent de validation : {str(e)}"
         )
 
+def _process_and_index_pdf(file_bytes: bytes, filename: str, session_id: str) -> dict:
+    import io
+    import pypdf
+    from langchain_core.documents import Document
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    from app.rag.retriever import get_session_vectorstore, delete_session_documents, batch_add_documents
+    from app.core.config import MAX_PDF_PAGES, EMBEDDING_BATCH_SIZE
+
+    pdf_reader = pypdf.PdfReader(io.BytesIO(file_bytes))
+    total_pages = len(pdf_reader.pages)
+
+    if total_pages > MAX_PDF_PAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Le nombre de pages ({total_pages}) dépasse la limite autorisée de {MAX_PDF_PAGES} pages."
+        )
+
+    # 1. Toujours supprimer les anciens documents vectoriels de la session en premier
+    delete_session_documents(session_id)
+
+    # 2. Extraction du texte page par page
+    pages_text = []
+    documents = []
+    pages_with_text = 0
+
+    for idx, page in enumerate(pdf_reader.pages, 1):
+        page_text = page.extract_text() or ""
+        if page_text.strip():
+            pages_with_text += 1
+            pages_text.append(f"[Page {idx}]\n{page_text}")
+            documents.append(Document(
+                page_content=page_text,
+                metadata={
+                    "session_id": session_id,
+                    "source": filename,
+                    "page": idx
+                }
+            ))
+
+    # 3. Détection des PDF scannés / images sans texte extractible
+    if total_pages > 0 and (pages_with_text == 0 or (pages_with_text / total_pages) < 0.5):
+        if pages_with_text == 0:
+            msg = "Aucun texte extractible trouvé dans le document PDF. Le fichier est probablement un document scanné ou composé uniquement d'images."
+        else:
+            msg = f"Seulement {pages_with_text}/{total_pages} pages contiennent du texte extractible. Le document semble être majoritairement scanné ou composé d'images."
+        return {
+            "success": False,
+            "filename": filename,
+            "message": msg,
+            "total_pages": total_pages,
+            "extracted_text": ""
+        }
+
+    # 4. Decoupage en chunks et ingestion par lots
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+    chunks = text_splitter.split_documents(documents)
+
+    session_db = get_session_vectorstore()
+    batch_add_documents(session_db, chunks, batch_size=EMBEDDING_BATCH_SIZE)
+
+    content = f"[Document PDF indexé dans la base vectorielle RAG de session. Total : {total_pages} pages.]"
+    return {
+        "success": True,
+        "filename": filename,
+        "message": "Fichier éphémère extrait et chargé dans la session avec succès.",
+        "total_pages": total_pages,
+        "extracted_text": content
+    }
+
+
 # 6. Route d'upload de fichiers éphémères pour l'Agent 2
 @app.post("/api/v1/validation/upload")
 async def upload_validation_file(
@@ -387,8 +457,17 @@ async def upload_validation_file(
     try:
         import io
         from app.services.session_storage import add_session_file, compute_file_stats
-        
+        from app.core.config import MAX_UPLOAD_SIZE_BYTES, MAX_UPLOAD_SIZE_MB
+
         file_bytes = await file.read()
+
+        # Garde-fou taille maximale de fichier
+        if len(file_bytes) > MAX_UPLOAD_SIZE_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"La taille du fichier ({len(file_bytes) / (1024*1024):.1f} Mo) dépasse la limite autorisée de {MAX_UPLOAD_SIZE_MB} Mo."
+            )
+
         content = ""
 
         # Extraction de texte par type de fichier
@@ -409,39 +488,14 @@ async def upload_validation_file(
                     pass
             
         elif filename.endswith('.pdf'):
-            import pypdf
-            from langchain_core.documents import Document
-            from langchain_text_splitters import RecursiveCharacterTextSplitter
-            from app.rag.retriever import get_session_vectorstore, delete_session_documents
-
-            pdf_reader = pypdf.PdfReader(io.BytesIO(file_bytes))
-            pages_text = []
-            documents = []
-            for idx, page in enumerate(pdf_reader.pages, 1):
-                page_text = page.extract_text() or ""
-                if page_text.strip():
-                    pages_text.append(f"[Page {idx}]\n{page_text}")
-                    documents.append(Document(
-                        page_content=page_text,
-                        metadata={
-                            "session_id": session_id,
-                            "source": file.filename,
-                            "page": idx
-                        }
-                    ))
-            content = "\n\n".join(pages_text)
-            
-            if documents:
-                # Nettoyage des anciens documents de la session
-                delete_session_documents(session_id)
-                
-                # Split du texte en chunks
-                text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-                chunks = text_splitter.split_documents(documents)
-                
-                # Ingestion dans le vectorstore de session
-                session_db = get_session_vectorstore()
-                session_db.add_documents(chunks)
+            pdf_res = await run_in_threadpool(_process_and_index_pdf, file_bytes, file.filename, session_id)
+            if not pdf_res["success"]:
+                return {
+                    "success": False,
+                    "filename": file.filename,
+                    "message": pdf_res["message"]
+                }
+            content = pdf_res["extracted_text"]
 
         elif filename.endswith('.xlsx'):
             import openpyxl
@@ -462,8 +516,6 @@ async def upload_validation_file(
 
         is_rag_file = filename.endswith('.pdf')
         if is_rag_file:
-            # Pas besoin de stocker le texte complet brut en mémoire ni de le tronquer pour le RAG
-            content = f"[Document PDF indexé dans la base vectorielle RAG de session. Total : {len(documents)} pages.]"
             full_stats["truncated_for_llm"] = False
         else:
             # Limitation de la taille du contenu pour le respect du rate-limit Gemini (max 15 000 char)
@@ -482,6 +534,8 @@ async def upload_validation_file(
             "message": "Fichier éphémère extrait et chargé dans la session avec succès."
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,

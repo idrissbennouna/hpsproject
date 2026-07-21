@@ -47,6 +47,8 @@ def get_vectorstore() -> PGVector:
         )
     return _vectorstore_instance
 
+# TODO: langchain_community.vectorstores.PGVector avec connection_string= est déprécié.
+# Migrer vers langchain_postgres.PGVector avec connection= lors d'une future refactorisation.
 def get_session_vectorstore() -> PGVector:
     """Retourne l'instance unique (singleton) de la base vectorielle PGVector pour les sessions éphémères."""
     global _session_vectorstore_instance
@@ -57,7 +59,51 @@ def get_session_vectorstore() -> PGVector:
             embedding_function=embeddings,
             collection_name="hps_session_files"
         )
+        ensure_session_id_index()
     return _session_vectorstore_instance
+
+def ensure_session_id_index():
+    """Crée un index sur la colonne cmetadata->>'session_id' si la table existe."""
+    try:
+        from sqlalchemy import create_engine, text
+        engine = create_engine(CONNECTION_STRING)
+        with engine.connect() as conn:
+            conn.execute(
+                text("CREATE INDEX IF NOT EXISTS idx_langchain_pg_embedding_session_id ON langchain_pg_embedding ((cmetadata->>'session_id'))")
+            )
+            conn.commit()
+        print("[INDEX] Index idx_langchain_pg_embedding_session_id verifie / cree avec succes.")
+    except Exception as e:
+        print(f"[WARN] Remarque indexation pgvector (optionnelle si table non creee) : {e}")
+
+def batch_add_documents(vectorstore, documents: list, batch_size: int = 50, max_retries: int = 3, initial_delay: float = 1.0):
+    """
+    Ingère les documents par lots (batches) dans le vectorstore avec retry/backoff exponentiel
+    et affichage de la progression (ex: 'Embedded 300/1400 chunks').
+    """
+    import time
+    total_chunks = len(documents)
+    if total_chunks == 0:
+        return
+
+    print(f"[BATCH] Debut de l'ingestion de {total_chunks} chunks par lots de {batch_size}...")
+    for i in range(0, total_chunks, batch_size):
+        batch = documents[i:i + batch_size]
+        attempt = 0
+        while attempt < max_retries:
+            try:
+                vectorstore.add_documents(batch)
+                processed = min(i + batch_size, total_chunks)
+                print(f"[PROGRESS] Embedded {processed}/{total_chunks} chunks dans pgvector.")
+                break
+            except Exception as err:
+                attempt += 1
+                if attempt >= max_retries:
+                    print(f"[ERROR] Echec critique lors de l'ingestion du lot {i}-{i+len(batch)} apres {max_retries} essais: {err}")
+                    raise err
+                delay = initial_delay * (2 ** (attempt - 1))
+                print(f"[WARN] Erreur lors de l'ingestion du lot {i}-{i+len(batch)} (tentative {attempt}/{max_retries}): {err}. Pause de {delay:.1f}s...")
+                time.sleep(delay)
 
 def delete_session_documents(session_id: str):
     """Supprime tous les documents associés à une session dans PGVector."""
@@ -70,9 +116,9 @@ def delete_session_documents(session_id: str):
                 {"session_id": session_id}
             )
             conn.commit()
-        print(f"🗑️ Documents de la session '{session_id}' supprimés de pgvector.")
+        print(f"[DELETE] Documents de la session '{session_id}' memoires/supprimes de pgvector.")
     except Exception as e:
-        print(f"⚠️ Impossible de supprimer les documents de session dans pgvector : {e}")
+        print(f"[WARN] Impossible de supprimer les documents de session dans pgvector : {e}")
 
 
 def _local_excel_fallback(query: str, k: int = 4) -> str:
