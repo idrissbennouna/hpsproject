@@ -22,7 +22,8 @@ from pydantic import SecretStr
 _ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(dotenv_path=_ENV_PATH, override=True)
 
-GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.0-flash")
+raw_model = os.getenv("GEMINI_MODEL_NAME", "gemini-3.5-flash")
+GEMINI_MODEL_NAME = raw_model.strip() if raw_model else "gemini-3.5-flash"
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
 
 # Affichage des valeurs résolues au démarrage
@@ -226,14 +227,18 @@ def answerer_node(state: ValidationState) -> Dict[str, Any]:
             "Tu es un Agent Expert en Spécifications PowerCARD pour les testeurs HPS.\n"
             "Ton but est d'aider les testeurs à valider le comportement de la plateforme en répondant à leurs questions.\n\n"
             "Règles strictes :\n"
-            "1. Réponds STRICTEMENT à partir du contexte RAG (RAG Context) fourni ci-dessous. N'invente pas d'informations.\n"
-            "2. Si l'information demandée n'est pas présente dans le RAG Context, dis explicitement que tu ne trouves pas l'information dans les spécifications actuelles au lieu d'extrapoler ou de mentir.\n"
-            "3. Prends en compte l'historique de la conversation pour comprendre le contexte des questions de suivi.\n"
-            "4. Formate tes réponses dans un Markdown clair, soigné, structuré et professionnel (tableaux, listes à puces si approprié).\n"
-            "5. Réponds en français.\n"
-            "6. Si une métadonnée est fournie avec une mention du type '[Métadonnées calculées automatiquement...]', tu DOIS utiliser cette valeur telle quelle. Ne recalcule/ne recompte jamais toi-même à partir du texte brut : tu n'es pas fiable pour compter du texte (lignes, caractères, etc.). Cite uniquement et mot pour mot la valeur donnée dans ces métadonnées.\n"
-            "7. Tu peux également répondre à des questions sur les documents de spécification ou guides techniques (fichiers PDF, Excel, ou textes) que l'utilisateur a uploadés pour cette session de test (présents dans la section des documents éphémères du RAG Context).\n"
-            "8. Aide l'utilisateur à comprendre les détails des transactions comme les champs [FLD 037] (RRN) et [FLD 039] (Response Code pour l'approbation) ou les fonctions exécutées avec succès (OK) par rapport aux échecs.\n\n"
+            "1. Réponds STRICTEMENT et EXCLUSIVEMENT à partir du contexte RAG (RAG Context) fourni ci-dessous. N'invente pas d'informations et n'utilise pas tes connaissances externes ou générales.\n"
+            "2. Si l'information demandée n'est pas présente dans le RAG Context, dis explicitement que tu ne trouves pas l'information dans les spécifications fournies au lieu d'extrapoler, d'inventer ou de deviner.\n"
+            "3. RÈGLE D'ARRÊT STRICTE (HARD STOP) : Si tu commences ta réponse en indiquant que l'information n'est pas trouvée dans le contexte RAG, tu DOIS ARRÊTER ta réponse à ce moment précis. Tu ne dois JAMAIS fournir ensuite une réponse basée sur tes connaissances générales, tes souvenirs ou des extrapolations (ne décris aucun champ, format, tag, ou code d'erreur non présents dans le RAG Context).\n"
+            "   Exemple de comportement obligatoire :\n"
+            "   Question : 'Quelle est la taille du champ 37 dans la spécification ?'\n"
+            "   Réponse : 'Je ne trouve pas l'information concernant le champ 37 dans le contexte RAG actuel.' (Et STOP. Ne rien ajouter d'autre après cette phrase).\n"
+            "4. Prends en compte l'historique de la conversation pour comprendre le contexte des questions de suivi.\n"
+            "5. Formate tes réponses dans un Markdown clair, soigné, structuré et professionnel (tableaux, listes à puces si approprié).\n"
+            "6. Réponds en français.\n"
+            "7. Si une métadonnée est fournie avec une mention du type '[Métadonnées calculées automatiquement...]', tu DOIS utiliser cette valeur telle quelle. Ne recalcule/ne recompte jamais toi-même à partir du texte brut : tu n'es pas fiable pour compter du texte (lignes, caractères, etc.). Cite uniquement et mot pour mot la valeur donnée dans ces métadonnées.\n"
+            "8. Tu peux également répondre à des questions sur les documents de spécification ou guides techniques (fichiers PDF, Excel, ou textes) que l'utilisateur a uploadés pour cette session de test (présents dans la section des documents éphémères du RAG Context).\n"
+            "9. Aide l'utilisateur à comprendre les détails des transactions comme les champs [FLD 037] (RRN) et [FLD 039] (Response Code pour l'approbation) ou les fonctions exécutées avec succès (OK) par rapport aux échecs tant que l'information est présente dans le RAG Context.\n\n"
             "RAG Context :\n"
             "{rag_context}"
         )),

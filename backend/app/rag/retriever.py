@@ -133,9 +133,11 @@ def search_session_chunks_keyword(session_id: str, keyword: str, limit: int = 5)
         return []
 
 class QuotaExhaustedError(Exception):
-
     """Exception levée lorsque le quota API d'embeddings Gemini est totalement épuisé."""
-    pass
+    def __init__(self, message: str, indexed_count: int, total_chunks: int):
+        super().__init__(message)
+        self.indexed_count = indexed_count
+        self.total_chunks = total_chunks
 
 def _is_rate_limit_error(exception: Exception) -> bool:
     """Détermine si l'erreur est un 429 RESOURCE_EXHAUSTED / Rate Limit."""
@@ -170,6 +172,7 @@ def batch_add_documents(
 
     print(f"[BATCH] Début de l'ingestion de {total_chunks} chunks par lots de {batch_size} (délai inter-lot: {inter_batch_delay}s)...")
     
+    indexed_count = 0
     try:
         for i in range(0, total_chunks, batch_size):
             batch = documents[i:i + batch_size]
@@ -194,12 +197,14 @@ def batch_add_documents(
                 print(f"[ERROR] Échec critique lors de l'ingestion du lot {i}-{i+len(batch)} après retries: {err}")
                 if _is_rate_limit_error(err):
                     raise QuotaExhaustedError(
-                        "Le quota de l'API Gemini pour les embeddings a été atteint. "
-                        "Réessayez plus tard ou contactez l'administrateur pour augmenter le quota (passage à un plan payant)."
+                        f"Gemini free-tier quota exhausted after indexing {indexed_count}/{total_chunks} chunks.",
+                        indexed_count=indexed_count,
+                        total_chunks=total_chunks
                     ) from err
                 raise err
 
             processed = min(i + batch_size, total_chunks)
+            indexed_count = processed
             print(f"[PROGRESS] Embedded {processed}/{total_chunks} chunks dans pgvector.")
             
             if processed < total_chunks and inter_batch_delay > 0:
@@ -208,8 +213,8 @@ def batch_add_documents(
         return total_chunks
 
     except Exception as e:
-        if session_id:
-            print(f"[CLEANUP] Suppression du state partiel de la session {session_id} suite à une erreur...")
+        if session_id and not isinstance(e, QuotaExhaustedError):
+            print(f"[CLEANUP] Suppression du state partiel de la session {session_id} suite à une erreur non-quota...")
             delete_session_documents(session_id)
         raise e
 

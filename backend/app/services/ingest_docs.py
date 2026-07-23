@@ -7,9 +7,8 @@ print("🔄 Démarrage du script d'ingestion (version refactorisée)...")
 
 try:
     from dotenv import load_dotenv
-    from langchain_community.vectorstores import PGVector
     from app.rag.loaders import load_all_docs
-    from app.rag.retriever import get_embeddings, CONNECTION_STRING, COLLECTION_NAME
+    from app.rag.retriever import get_vectorstore, batch_add_documents
     print("✅ Tous les modules requis ont été importés avec succès.")
 except ImportError as e:
     print(f"❌ Erreur d'importation : {e}")
@@ -24,8 +23,6 @@ def initialiser_et_ingerer():
         return
 
     try:
-        embeddings = get_embeddings()
-
         current_dir = Path(__file__).resolve().parent
         # Dans la structure du projet, app/storage est au niveau backend/app/storage, c'est-à-dire :
         # current_dir est backend/app/services. Le dossier storage est backend/app/storage.
@@ -40,16 +37,14 @@ def initialiser_et_ingerer():
             return
 
         print("📥 Connexion à PostgreSQL et initialisation de pgvector...")
+        db = get_vectorstore()
+        
+        print("🧹 Suppression de l'ancienne collection...")
+        db.delete_collection()
 
-        db = PGVector.from_documents(
-            documents=documents_specs,
-            embedding=embeddings,
-            collection_name=COLLECTION_NAME,
-            connection_string=CONNECTION_STRING,
-            pre_delete_collection=True
-        )
+        indexed_count = batch_add_documents(db, documents_specs)
 
-        print(f"✅ Base de données PostgreSQL initialisée avec succès : {len(documents_specs)} spécifications réelles indexées !")
+        print(f"✅ Base de données PostgreSQL initialisée avec succès : {indexed_count}/{len(documents_specs)} spécifications réelles indexées !")
 
     except Exception as e:
         print(f"❌ Une erreur est survenue lors de l'initialisation de la DB : {e}")

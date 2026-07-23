@@ -1,7 +1,7 @@
 {
-  "total_input_tokens": 339523,
-  "total_output_tokens": 57681,
-  "total_tokens": 397204,
+  "total_input_tokens": 365984,
+  "total_output_tokens": 73545,
+  "total_tokens": 439529,
   "history": [
     {
       "timestamp": "2026-07-13T14:54:51.933440",
@@ -366,6 +366,55 @@
       "input_tokens": 7125,
       "output_tokens": 1172,
       "total_tokens": 8297
+    },
+    {
+      "timestamp": "2026-07-21T12:10:32.978481",
+      "agent": "ValidationAgent",
+      "input_tokens": 7785,
+      "output_tokens": 3066,
+      "total_tokens": 10851
+    },
+    {
+      "timestamp": "2026-07-21T12:21:49.221206",
+      "agent": "ValidationAgent",
+      "input_tokens": 6304,
+      "output_tokens": 1554,
+      "total_tokens": 7858
+    },
+    {
+      "timestamp": "2026-07-21T12:29:05.717528",
+      "agent": "ValidationAgent",
+      "input_tokens": 1540,
+      "output_tokens": 598,
+      "total_tokens": 2138
+    },
+    {
+      "timestamp": "2026-07-21T12:30:32.180343",
+      "agent": "ValidationAgent",
+      "input_tokens": 1711,
+      "output_tokens": 2644,
+      "total_tokens": 4355
+    },
+    {
+      "timestamp": "2026-07-21T15:07:17.837962",
+      "agent": "ValidationAgent",
+      "input_tokens": 2866,
+      "output_tokens": 2765,
+      "total_tokens": 5631
+    },
+    {
+      "timestamp": "2026-07-23T09:16:34.879160",
+      "agent": "ValidationAgent",
+      "input_tokens": 2229,
+      "output_tokens": 1726,
+      "total_tokens": 3955
+    },
+    {
+      "timestamp": "2026-07-23T09:50:27.597851",
+      "agent": "ValidationAgent",
+      "input_tokens": 4026,
+      "output_tokens": 3511,
+      "total_tokens": 7537
     }
   ]
 }

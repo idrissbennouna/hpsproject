@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -277,6 +277,12 @@ async def analyze_logs(
         }
         
     except Exception as e:
+        from app.services.llm_util import GeminiOverloadedError, GeminiQuotaExhaustedError
+        real_exc = e.__cause__ or e
+        if isinstance(real_exc, GeminiOverloadedError):
+            raise HTTPException(status_code=503, detail="Le service Gemini est temporairement surchargé. Veuillez réessayer dans quelques instants.")
+        elif isinstance(real_exc, GeminiQuotaExhaustedError):
+            raise HTTPException(status_code=429, detail="Le quota de l'API Gemini a été atteint. Veuillez réessayer plus tard.")
         raise HTTPException(status_code=500, detail=f"Erreur lors de l'analyse agentique : {str(e)}")
 
 
@@ -362,6 +368,12 @@ async def ask_validation_agent(request: ValidationRequest):
         }
 
     except Exception as e:
+        from app.services.llm_util import GeminiOverloadedError, GeminiQuotaExhaustedError
+        real_exc = e.__cause__ or e
+        if isinstance(real_exc, GeminiOverloadedError):
+            raise HTTPException(status_code=503, detail="Le service Gemini est temporairement surchargé. Veuillez réessayer dans quelques instants.")
+        elif isinstance(real_exc, GeminiQuotaExhaustedError):
+            raise HTTPException(status_code=429, detail="Le quota de l'API Gemini a été atteint. Veuillez réessayer plus tard.")
         raise HTTPException(
             status_code=500,
             detail=f"Erreur lors de l'exécution de l'agent de validation : {str(e)}"
@@ -409,6 +421,7 @@ def _process_and_index_pdf(file_bytes: bytes, filename: str, session_id: str) ->
     except Exception as pdf_err:
         return {
             "success": False,
+            "error_type": "pdf_error",
             "filename": filename,
             "message": f"Fichier PDF invalide ou illisible : {pdf_err}",
             "total_pages": 0,
@@ -423,6 +436,7 @@ def _process_and_index_pdf(file_bytes: bytes, filename: str, session_id: str) ->
             msg = f"Seulement {pages_with_text}/{total_pages} pages contiennent du texte extractible. Le document semble être majoritairement scanné ou composé d'images."
         return {
             "success": False,
+            "error_type": "scanned_pdf",
             "filename": filename,
             "message": msg,
             "total_pages": total_pages,
@@ -447,12 +461,16 @@ def _process_and_index_pdf(file_bytes: bytes, filename: str, session_id: str) ->
     except QuotaExhaustedError as qe:
         return {
             "success": False,
+            "error_type": "quota_exhausted",
             "filename": filename,
-            "message": str(qe)
+            "indexed": qe.indexed_count,
+            "total": qe.total_chunks,
+            "message": f"Gemini free-tier quota exhausted after indexing {qe.indexed_count}/{qe.total_chunks} chunks. Try again later or reduce document size."
         }
     except Exception as e:
         return {
             "success": False,
+            "error_type": "ingestion_failed",
             "filename": filename,
             "message": f"Erreur lors de l'indexation vectorielle du document PDF : {str(e)}"
         }
@@ -522,11 +540,24 @@ async def upload_validation_file(
         elif filename.endswith('.pdf'):
             pdf_res = await run_in_threadpool(_process_and_index_pdf, file_bytes, file.filename, session_id)
             if not pdf_res["success"]:
-                return {
-                    "success": False,
-                    "filename": file.filename,
-                    "message": pdf_res["message"]
-                }
+                if pdf_res.get("error_type") == "quota_exhausted":
+                    return JSONResponse(
+                        status_code=503,
+                        content={
+                            "error": "quota_exhausted",
+                            "indexed": pdf_res.get("indexed", 0),
+                            "total": pdf_res.get("total", 0),
+                            "message": pdf_res["message"]
+                        }
+                    )
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "success": False,
+                        "error_type": pdf_res.get("error_type", "pdf_error"),
+                        "message": pdf_res["message"]
+                    }
+                )
             content = pdf_res["extracted_text"]
 
         elif filename.endswith('.xlsx'):

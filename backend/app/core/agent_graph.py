@@ -27,7 +27,8 @@ load_dotenv(dotenv_path=_ENV_PATH, override=True)
 # --- CONFIGURATION (avant : hardcodée, maintenant pilotable via .env) ---
 _BACKEND_DIR = _ENV_PATH.parent
 LOG_STORAGE_DIR = os.getenv("LOG_STORAGE_DIR", str(_BACKEND_DIR / "app" / "storage"))
-GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.0-flash")
+raw_model = os.getenv("GEMINI_MODEL_NAME", "gemini-3.5-flash")
+GEMINI_MODEL_NAME = raw_model.strip() if raw_model else "gemini-3.5-flash"
 MAX_SUSPICIOUS_TRANSACTIONS = int(os.getenv("MAX_SUSPICIOUS_TRANSACTIONS", "10"))
 MAX_FALLBACK_TRANSACTIONS = int(os.getenv("MAX_FALLBACK_TRANSACTIONS", "5"))
 

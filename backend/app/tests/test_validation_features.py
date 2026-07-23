@@ -111,7 +111,7 @@ class TestValidationFeatures(unittest.TestCase):
 
     @patch("app.rag.retriever.delete_session_documents")
     def test_batch_add_documents_quota_exhausted(self, mock_delete_docs):
-        """Vérifie la levée de QuotaExhaustedError et le nettoyage de session en cas de quota épuisé."""
+        """Vérifie la levée de QuotaExhaustedError et la conservation des chunks déjà indexés en cas de quota épuisé."""
         from app.rag.retriever import QuotaExhaustedError
         mock_db = MagicMock()
         mock_db.add_documents.side_effect = Exception("429 RESOURCE_EXHAUSTED: Quota exceeded")
@@ -121,7 +121,7 @@ class TestValidationFeatures(unittest.TestCase):
             with self.assertRaises(QuotaExhaustedError):
                 batch_add_documents(mock_db, mock_docs, batch_size=5, max_retries=2, initial_delay=0.01, inter_batch_delay=0, session_id="test_sess_429")
 
-        mock_delete_docs.assert_called_once_with("test_sess_429")
+        mock_delete_docs.assert_not_called()
 
     @patch("app.core.validation_agent_graph.query_specs", return_value="")
     @patch("app.rag.retriever.get_session_vectorstore")

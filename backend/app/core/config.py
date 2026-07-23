@@ -9,6 +9,8 @@ MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "1000"))
 # RAG & Embedding Batching Config
 PDF_CHUNK_SIZE = int(os.getenv("PDF_CHUNK_SIZE", "2500"))
 PDF_CHUNK_OVERLAP = int(os.getenv("PDF_CHUNK_OVERLAP", "300"))
-EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "10"))
-EMBEDDING_BATCH_DELAY_SECONDS = float(os.getenv("EMBEDDING_BATCH_DELAY_SECONDS", "2.0"))
+# Tuned for Gemini API free tier limits (low RPM/daily quota). Increase if billing is enabled.
+EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "5"))
+EMBEDDING_BATCH_DELAY_SECONDS = float(os.getenv("EMBEDDING_BATCH_DELAY_SECONDS", "8.0"))
+
 
