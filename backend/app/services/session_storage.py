@@ -18,10 +18,6 @@ def compute_file_stats(content: str) -> dict:
 def add_session_file(session_id: str, filename: str, content: str, full_stats: dict = None, is_rag: bool = False):
     """
     Ajoute un fichier extrait à la session en cours avec ses statistiques.
-    
-    full_stats (optionnel) : si fourni, ce sont les stats du fichier ORIGINAL
-    (avant troncature éventuelle pour respecter les limites de tokens).
-    Sinon, les stats sont calculées sur `content` tel quel.
     """
     if session_id not in EPHEMERAL_SESSIONS:
         EPHEMERAL_SESSIONS[session_id] = []
@@ -38,7 +34,7 @@ def add_session_file(session_id: str, filename: str, content: str, full_stats: d
         "stats": stats,
         "is_rag": is_rag
     })
-    print(f"💾 Fichier '{filename}' ajouté avec succès à la session '{session_id}' (is_rag={is_rag}) avec statistiques : {stats}.")
+    print(f"Fichier '{filename}' ajoute a la session '{session_id}' (is_rag={is_rag}).")
 
 
 def get_session_files(session_id: str) -> list[dict]:

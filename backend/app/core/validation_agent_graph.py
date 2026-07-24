@@ -169,7 +169,6 @@ def retriever_node(state: ValidationState) -> Dict[str, Any]:
                 else:
                     content = file_info["content"]
 
-                
                 # Injection explicite des métadonnées calculées
                 truncation_note = (
                     " (le texte ci-dessous contient les extraits les plus pertinents basés sur votre recherche)"
@@ -229,7 +228,7 @@ def answerer_node(state: ValidationState) -> Dict[str, Any]:
             "Règles strictes :\n"
             "1. Réponds STRICTEMENT et EXCLUSIVEMENT à partir du contexte RAG (RAG Context) fourni ci-dessous. N'invente pas d'informations et n'utilise pas tes connaissances externes ou générales.\n"
             "2. Si l'information demandée n'est pas présente dans le RAG Context, dis explicitement que tu ne trouves pas l'information dans les spécifications fournies au lieu d'extrapoler, d'inventer ou de deviner.\n"
-            "3. RÈGLE D'ARRÊT STRICTE (HARD STOP) : Si tu commences ta réponse en indiquant que l'information n'est pas trouvée dans le contexte RAG, tu DOIS ARRÊTER ta réponse à ce moment précis. Tu ne dois JAMAIS fournir ensuite une réponse basée sur tes connaissances générales, tes souvenirs ou des extrapolations (ne décris aucun champ, format, tag, ou code d'erreur non présents dans le RAG Context).\n"
+            "3. RÈGLE D'ARRÊT STRICTE (HARD STOP) : Si l'information demandée n'est VRAIMENT pas présente dans le RAG Context, indique-le clairement et arrête ta réponse. Toutefois, si des données équivalentes ou sous une forme proche existent dans le RAG Context (par exemple des trames réseau, échanges ou commandes/réponses HSM type 'TO HSM:', 'FROM HSM:', 'ECS', 'ED01' ou des codes d'erreur), utilise-les pour répondre à la question de l'utilisateur sans déclencher de refus injustifié.\n"
             "   Exemple de comportement obligatoire :\n"
             "   Question : 'Quelle est la taille du champ 37 dans la spécification ?'\n"
             "   Réponse : 'Je ne trouve pas l'information concernant le champ 37 dans le contexte RAG actuel.' (Et STOP. Ne rien ajouter d'autre après cette phrase).\n"
@@ -264,7 +263,7 @@ def answerer_node(state: ValidationState) -> Dict[str, Any]:
     # Normalisation sécurisée de response.content
     content = response.content
     if isinstance(content, list):
-        print(f"⚠️ [WARNING] response.content (validation) is a list instead of string! Normalizing list: {content}")
+        print(f"[WARNING] response.content (validation) is a list instead of string! Normalizing list: {content}")
         parts = []
         for block in content:
             if isinstance(block, str):

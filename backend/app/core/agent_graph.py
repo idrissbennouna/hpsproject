@@ -101,17 +101,12 @@ def parser_story_node(state: AgentState) -> Dict[str, Any]:
 
     all_parsed_transactions = parse_trace_file_for_story(log_file_path)
 
-    # STRATÉGIE INGÉNIEUR : on ne garde que les transactions suspectes (avec alertes)
-    suspicious_transactions = [tx for tx in all_parsed_transactions if tx.get("alerts_found")]
+    # Sécurité explicite : filtrage des heartbeats (is_heartbeat=True)
+    transactions_finales = [tx for tx in all_parsed_transactions if not tx.get("is_heartbeat")]
 
-    if not suspicious_transactions:
-        suspicious_transactions = all_parsed_transactions[:MAX_FALLBACK_TRANSACTIONS]
-    else:
-        suspicious_transactions = suspicious_transactions[:MAX_SUSPICIOUS_TRANSACTIONS]
+    log_data_json = json.dumps(transactions_finales, indent=2, ensure_ascii=False)
 
-    condensed_json = json.dumps(suspicious_transactions, indent=2, ensure_ascii=False)
-
-    return {"log_data_json": condensed_json, "current_agent": "ParserAgent"}
+    return {"log_data_json": log_data_json, "current_agent": "ParserAgent"}
 
 
 # --- NOEUD 2 : RAG SPECIFICATION RETRIEVER (dynamique, plus de texte écrit à la main) ---

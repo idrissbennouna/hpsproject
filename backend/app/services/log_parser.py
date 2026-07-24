@@ -36,6 +36,23 @@ RE_MTI_1110 = re.compile(r"M\.T\.I\s*:\s*1110")
 # ne suffit pas, cf. bug de contamination croisée corrigé ci-dessous).
 RE_SESSION = re.compile(r"^\S+\s+\S+\s+\S+\s+(\S+?)\|")
 
+# Regex déclencheur de nouvelle transaction : englobe TOUTES les fonctions "Start Dump*()"
+# (ex: DumpVisa, DumpCis, DumpIso, DumpMastercard, DumpAmex, DumpFile, dump_buffer, etc.)
+RE_START_TRANSACTION = re.compile(r"Start\s+(?:Dump[A-Za-z0-9_]*|dump_buffer)\(\)", re.IGNORECASE)
+
+# Extraction des commandes et réponses du Security Module / HSM (TO HSM, FROM HSM, HsmResultCode)
+# Exemples :
+#   TO HSM:183-->ECS0007272TN00S...
+#   FROM HSM: <--ED01|
+#   HsmResultCode = ED01
+#   Tag: 'P93' : ( HSM_RESULT_CODE.........) : [ED01]
+RE_TO_HSM = re.compile(r"TO\s+HSM\s*:\s*(?:Len=\[\d+\]-->\s*Data=)?\s*(.*?)$", re.IGNORECASE)
+RE_FROM_HSM = re.compile(r"FROM\s+HSM\s*:\s*<--(.*?)$", re.IGNORECASE)
+RE_HSM_RESULT = re.compile(r"(?:HsmResultCode\s*=\s*|HSM_RESULT_CODE\s*\.*\s*\)\s*:\s*\[?)(\w+)", re.IGNORECASE)
+RE_MTI = re.compile(r"M\.T\.I\s*:\s*\[?(\d{4})\]?")
+HEARTBEAT_MTIS = {"0800", "0810"}
+
+
 
 def _build_function_failure_patterns(spec_path: str = None) -> dict:
     """
@@ -111,6 +128,7 @@ def _new_tx() -> dict:
             "rrn": None,
             "response_code": None
         },
+        "mti": None,
         "events": [],
         "alerts": [],
         "failed_functions": [],
@@ -211,26 +229,31 @@ def parse_trace_file_for_story(file_path: str, spec_path: str = None) -> list:
                         del pending_mti_sessions[session_id]
 
                 # --- 2. DÉTECTION D'UNE NOUVELLE TRANSACTION (scindée par session) ---
-                if "Start DumpVisa()" in line:
+                if RE_START_TRANSACTION.search(line):
                     previous_tx = sessions.get(session_id)
                     if previous_tx is not None:
                         save(previous_tx)
                     tx = _new_tx()
-                    _add_event(tx, "Message Réseau Entrant (Incoming Visa Request) détecté.")
+                    _add_event(tx, "Message Réseau Entrant (Incoming Request) détecté.")
                     sessions[session_id] = tx
                     continue
 
                 tx = sessions.get(session_id)
                 if tx is None:
                     # Ligne appartenant à une session dont on n'a pas encore vu le
-                    # "Start DumpVisa()" (début de fichier tronqué) -> on l'ignore
-                    # plutôt que de la rattacher à la mauvaise transaction.
+                    # "Start Dump*()" (début de fichier tronqué) -> on l'ignore
                     continue
 
-                # --- FILTRAGE DES HEARTBEATS ---
+                # --- FILTRAGE BASE SUR LE MTI (0800 / 0810 = Heartbeat / Network Management) ---
+                mti_match = RE_MTI.search(line)
+                if mti_match:
+                    mti_val = mti_match.group(1)
+                    tx["mti"] = mti_val
+                    if mti_val in HEARTBEAT_MTIS:
+                        tx["is_heartbeat"] = True
+
                 if HEARTBEAT_FIELD in line and HEARTBEAT_VALUE in line:
                     tx["is_heartbeat"] = True
-                    continue
 
                 # --- EXTRACTION DES IDENTIFIANTS (regex corrigées) ---
                 match = RE_TRANSACTION_ID.search(line)
@@ -257,6 +280,28 @@ def parse_trace_file_for_story(file_path: str, spec_path: str = None) -> list:
                     tx["identifiers"]["response_code"] = val_rc
                     status = "Approuvée" if val_rc in ["00", "000"] else f"Déclinée (Code: {val_rc})"
                     _add_event(tx, f"Champ [FLD 039] (Response Code) détecté : {val_rc} ({status}).")
+
+                # --- EXTRACTION DES ÉCHANGES HSM / SÉCURITÉ ---
+                match_to_hsm = RE_TO_HSM.search(line)
+                if match_to_hsm:
+                    hsm_cmd = match_to_hsm.group(1).strip()
+                    if hsm_cmd:
+                        _add_event(tx, f"Échange HSM (TO HSM) : Commande transmise au HSM -> {hsm_cmd}")
+
+                match_from_hsm = RE_FROM_HSM.search(line)
+                if match_from_hsm:
+                    hsm_resp = match_from_hsm.group(1).strip()
+                    if hsm_resp:
+                        _add_event(tx, f"Échange HSM (FROM HSM) : Réponse reçue du HSM -> {hsm_resp}")
+
+                match_hsm_res = RE_HSM_RESULT.search(line)
+                if match_hsm_res:
+                    hsm_res_code = match_hsm_res.group(1).strip()
+                    _add_event(tx, f"Code Résultat HSM (HsmResultCode) : {hsm_res_code}")
+                    if hsm_res_code and hsm_res_code not in ["00", "000", "0"]:
+                        anomalie = f"Erreur HSM détectée : Code d'erreur HSM {hsm_res_code}."
+                        if anomalie not in tx["alerts"]:
+                            tx["alerts"].append(anomalie)
 
                 # --- 1. RECONSTITUTION DE LA STORY (jalons structurels ISO/TLV) ---
                 # On ne déclenche que sur la ligne "End ..." (fin d'exécution réelle),

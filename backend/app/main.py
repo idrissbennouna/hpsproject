@@ -56,8 +56,10 @@ async def analyze_logs(
     sauvegarde le fichier localement, l'analyse via LangGraph + Gemini,
     et génère un rapport PDF d'audit technique exclusif pour les testeurs HPS.
     """
-    if not file.filename.endswith('.TXT') and not file.filename.endswith('.txt'):
-        raise HTTPException(status_code=400, detail="Seuls les fichiers de traces au format .TXT sont acceptés.")
+    filename_lower = file.filename.lower()
+    is_trace_file = any(filename_lower.endswith(ext) for ext in ('.txt', '.log', '.trc', '.dat')) or '.trc' in filename_lower
+    if not is_trace_file:
+        raise HTTPException(status_code=400, detail="Seuls les fichiers de traces (.TXT, .LOG, .TRC, .DAT) sont acceptés.")
     
     target_file_path = STORAGE_DIR / file.filename
     
@@ -498,10 +500,14 @@ async def upload_validation_file(
     et l'enregistre en mémoire sous le session_id fourni.
     """
     filename = file.filename.lower()
-    if not (filename.endswith('.txt') or filename.endswith('.pdf') or filename.endswith('.xlsx')):
+    is_trace_file = any(filename.endswith(ext) for ext in ('.txt', '.log', '.trc', '.dat')) or '.trc' in filename
+    is_pdf_file = filename.endswith('.pdf')
+    is_excel_file = filename.endswith('.xlsx') or filename.endswith('.xls')
+
+    if not (is_trace_file or is_pdf_file or is_excel_file):
         raise HTTPException(
             status_code=400,
-            detail="Seuls les formats de fichiers .TXT, .PDF et .XLSX sont supportés."
+            detail="Seuls les formats de fichiers de trace (.TXT, .LOG, .TRC), .PDF et .XLSX sont supportés."
         )
 
     try:
@@ -519,9 +525,10 @@ async def upload_validation_file(
             )
 
         content = ""
+        parsed_log_successfully = False
 
         # Extraction de texte par type de fichier
-        if filename.endswith('.txt'):
+        if is_trace_file:
             import tempfile
             with tempfile.NamedTemporaryFile(delete=False, suffix=".TXT") as temp_file:
                 temp_file.write(file_bytes)
@@ -529,8 +536,11 @@ async def upload_validation_file(
             try:
                 from app.services.log_parser import parse_and_format_log_file
                 content = parse_and_format_log_file(temp_path)
-                if not content:
+                if content:
+                    parsed_log_successfully = True
+                else:
                     content = file_bytes.decode("utf-8", errors="ignore")
+                    parsed_log_successfully = False
             finally:
                 try:
                     os.remove(temp_path)
@@ -574,19 +584,24 @@ async def upload_validation_file(
                         sheet_blocks.append(f"Ligne {r_idx}: {row_str}")
             content = "\n".join(sheet_blocks)
 
-        # Calcul des stats sur le contenu complet avant troncature
+        # Calcul des stats sur le contenu complet avant toute troncature de fallback
         full_stats = compute_file_stats(content)
 
         is_rag_file = filename.endswith('.pdf')
-        if is_rag_file:
+        if is_rag_file or parsed_log_successfully:
+            # Transmet l'intégralité du contenu parsé (toutes les transactions, hors heartbeats)
             full_stats["truncated_for_llm"] = False
         else:
-            # Limitation de la taille du contenu pour le respect du rate-limit Gemini (max 15 000 char)
+            # FALLBACK UNIQUEMENT : si parse_and_format_log_file() a échoué (ou pour .xlsx bruts sans structuration log)
             MAX_CHARACTERS = 15000
             was_truncated = len(content) > MAX_CHARACTERS
             full_stats["truncated_for_llm"] = was_truncated
             if was_truncated:
-                content = content[:MAX_CHARACTERS] + f"\n\n... [Contenu tronqué pour préserver les limites de jetons de l'API (max {MAX_CHARACTERS} caractères sur {full_stats['char_count']} au total)]"
+                content = content[:MAX_CHARACTERS] + (
+                    f"\n\n... [AVERTISSEMENT : Le parsing structuré du fichier de trace a échoué. "
+                    f"Le contenu brut non structuré est partiel et a été tronqué aux {MAX_CHARACTERS} premiers caractères "
+                    f"sur {full_stats['char_count']} au total.]"
+                )
 
         # Enregistrement dans la session correspondante
         add_session_file(session_id, file.filename, content, full_stats=full_stats, is_rag=is_rag_file)
