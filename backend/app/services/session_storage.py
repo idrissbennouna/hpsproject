@@ -15,9 +15,9 @@ def compute_file_stats(content: str) -> dict:
         "char_count": char_count
     }
 
-def add_session_file(session_id: str, filename: str, content: str, full_stats: dict = None, is_rag: bool = False):
+def add_session_file(session_id: str, filename: str, content: str, full_stats: dict = None, is_rag: bool = False, file_hash: str = None):
     """
-    Ajoute un fichier extrait à la session en cours avec ses statistiques.
+    Ajoute un fichier extrait à la session en cours avec ses statistiques et son hash SHA-256.
     """
     if session_id not in EPHEMERAL_SESSIONS:
         EPHEMERAL_SESSIONS[session_id] = []
@@ -28,13 +28,17 @@ def add_session_file(session_id: str, filename: str, content: str, full_stats: d
     ]
     
     stats = full_stats if full_stats is not None else compute_file_stats(content)
-    EPHEMERAL_SESSIONS[session_id].append({
+    file_entry = {
         "name": filename,
         "content": content,
         "stats": stats,
         "is_rag": is_rag
-    })
-    print(f"Fichier '{filename}' ajoute a la session '{session_id}' (is_rag={is_rag}).")
+    }
+    if file_hash:
+        file_entry["file_hash"] = file_hash
+        
+    EPHEMERAL_SESSIONS[session_id].append(file_entry)
+    print(f"Fichier '{filename}' ajoute a la session '{session_id}' (is_rag={is_rag}, file_hash={file_hash}).")
 
 
 def get_session_files(session_id: str) -> list[dict]:

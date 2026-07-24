@@ -383,11 +383,24 @@ async def ask_validation_agent(request: ValidationRequest):
 
 def _process_and_index_pdf(file_bytes: bytes, filename: str, session_id: str) -> dict:
     import io
+    import hashlib
     import pdfplumber
     from langchain_core.documents import Document
     from langchain_text_splitters import RecursiveCharacterTextSplitter
-    from app.rag.retriever import get_session_vectorstore, delete_session_documents, batch_add_documents, QuotaExhaustedError
+    from app.rag.retriever import (
+        get_session_vectorstore, 
+        batch_add_documents, 
+        QuotaExhaustedError, 
+        find_chunks_by_file_hash
+    )
     from app.core.config import MAX_PDF_PAGES, PDF_CHUNK_SIZE, PDF_CHUNK_OVERLAP, EMBEDDING_BATCH_SIZE, EMBEDDING_BATCH_DELAY_SECONDS
+
+    # Step 1: Compute file_hash before extracting/chunking
+    file_hash = hashlib.sha256(file_bytes).hexdigest()
+
+    # Check existing embedding info (chunk count, pages, and existing chunk indices)
+    existing_info = find_chunks_by_file_hash(file_hash)
+    existing_chunk_indices = existing_info.get("existing_chunk_indices", set())
 
     documents = []
     pages_with_text = 0
@@ -402,10 +415,7 @@ def _process_and_index_pdf(file_bytes: bytes, filename: str, session_id: str) ->
                     detail=f"Le nombre de pages ({total_pages}) dépasse la limite autorisée de {MAX_PDF_PAGES} pages."
                 )
 
-            # 1. Toujours supprimer les anciens documents vectoriels de la session en premier
-            delete_session_documents(session_id)
-
-            # 2. Extraction du texte page par page avec pdfplumber
+            # Extraction du texte page par page avec pdfplumber
             for idx, page in enumerate(pdf.pages, 1):
                 page_text = page.extract_text() or ""
                 if page_text.strip():
@@ -414,6 +424,7 @@ def _process_and_index_pdf(file_bytes: bytes, filename: str, session_id: str) ->
                         page_content=page_text,
                         metadata={
                             "session_id": session_id,
+                            "file_hash": file_hash,
                             "source": filename,
                             "page": idx
                         }
@@ -430,7 +441,7 @@ def _process_and_index_pdf(file_bytes: bytes, filename: str, session_id: str) ->
             "extracted_text": ""
         }
 
-    # 3. Détection des PDF scannés / images sans texte extractible
+    # Détection des PDF scannés / images sans texte extractible
     if total_pages > 0 and (pages_with_text == 0 or (pages_with_text / total_pages) < 0.5):
         if pages_with_text == 0:
             msg = "Aucun texte extractible trouvé dans le document PDF. Le fichier est probablement un document scanné ou composé uniquement d'images."
@@ -445,48 +456,72 @@ def _process_and_index_pdf(file_bytes: bytes, filename: str, session_id: str) ->
             "extracted_text": ""
         }
 
-
-    # 4. Decoupage en chunks et ingestion par lots
+    # Decoupage en chunks et tagging metadata chunk_index
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=PDF_CHUNK_SIZE, chunk_overlap=PDF_CHUNK_OVERLAP)
     chunks = text_splitter.split_documents(documents)
+
+    for c_idx, chunk in enumerate(chunks):
+        chunk.metadata["chunk_index"] = c_idx
+
+    # If all chunks are already present in pgvector
+    if existing_info.get("found") and len(existing_chunk_indices) >= len(chunks):
+        print(f"[REUSE_HASH] File '{filename}' (hash: {file_hash[:10]}...) completely embedded ({len(existing_chunk_indices)}/{len(chunks)} chunks). Reusing for session '{session_id}'.")
+        content = f"[Document PDF indexé dans la base vectorielle RAG de session. Total : {total_pages} pages.]"
+        return {
+            "success": True,
+            "reused": True,
+            "file_hash": file_hash,
+            "filename": filename,
+            "message": "Fichier éphémère réutilisé sans ré-embedding.",
+            "total_pages": total_pages,
+            "extracted_text": content
+        }
+
+    # Filter out chunks that are already embedded (Resumption logic)
+    missing_chunks = [c for c in chunks if c.metadata["chunk_index"] not in existing_chunk_indices]
+
+    if existing_chunk_indices:
+        print(f"[RESUME_HASH] File '{filename}' (hash: {file_hash[:10]}...): Resuming ingestion. {len(existing_chunk_indices)}/{len(chunks)} chunks already present, embedding remaining {len(missing_chunks)} chunks.")
 
     session_db = get_session_vectorstore()
     try:
         indexed_count = batch_add_documents(
             session_db,
-            chunks,
+            missing_chunks,
             batch_size=EMBEDDING_BATCH_SIZE,
             inter_batch_delay=EMBEDDING_BATCH_DELAY_SECONDS,
             session_id=session_id
         )
-        print(f"[INDEX_SUCCESS] Session '{session_id}': {indexed_count}/{len(chunks)} chunks indexés avec succès.")
+        print(f"[INDEX_SUCCESS] Session '{session_id}': {indexed_count}/{len(missing_chunks)} missing chunks indexés avec succès.")
     except QuotaExhaustedError as qe:
         return {
             "success": False,
             "error_type": "quota_exhausted",
             "filename": filename,
+            "file_hash": file_hash,
             "indexed": qe.indexed_count,
-            "total": qe.total_chunks,
-            "message": f"Gemini free-tier quota exhausted after indexing {qe.indexed_count}/{qe.total_chunks} chunks. Try again later or reduce document size."
+            "total": len(missing_chunks),
+            "message": f"Gemini free-tier quota exhausted after indexing {qe.indexed_count}/{len(missing_chunks)} chunks. Try again later or reduce document size."
         }
     except Exception as e:
         return {
             "success": False,
             "error_type": "ingestion_failed",
             "filename": filename,
+            "file_hash": file_hash,
             "message": f"Erreur lors de l'indexation vectorielle du document PDF : {str(e)}"
         }
 
     content = f"[Document PDF indexé dans la base vectorielle RAG de session. Total : {total_pages} pages.]"
     return {
         "success": True,
+        "reused": False,
+        "file_hash": file_hash,
         "filename": filename,
         "message": "Fichier éphémère extrait et chargé dans la session avec succès.",
         "total_pages": total_pages,
         "extracted_text": content
     }
-
-
 
 
 # 6. Route d'upload de fichiers éphémères pour l'Agent 2
@@ -526,6 +561,7 @@ async def upload_validation_file(
 
         content = ""
         parsed_log_successfully = False
+        file_hash = None
 
         # Extraction de texte par type de fichier
         if is_trace_file:
@@ -569,6 +605,7 @@ async def upload_validation_file(
                     }
                 )
             content = pdf_res["extracted_text"]
+            file_hash = pdf_res.get("file_hash")
 
         elif filename.endswith('.xlsx'):
             import openpyxl
@@ -604,7 +641,7 @@ async def upload_validation_file(
                 )
 
         # Enregistrement dans la session correspondante
-        add_session_file(session_id, file.filename, content, full_stats=full_stats, is_rag=is_rag_file)
+        add_session_file(session_id, file.filename, content, full_stats=full_stats, is_rag=is_rag_file, file_hash=file_hash)
 
         return {
             "success": True,
