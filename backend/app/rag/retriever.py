@@ -337,3 +337,84 @@ def query_specs(query: str, k: int = 4) -> str:
     except Exception as e:
         print(f"⚠️ Recherche vectorielle échouée (Erreur: {type(e).__name__} - {str(e)}). Utilisation du fallback Excel local...")
         return _local_excel_fallback(query, k=k)
+FIELD_NUMBER_RE = re.compile(
+    r"(?:field|champ|fld)\s*0*(\d+)",
+    re.IGNORECASE,
+)
+
+
+def _query_field_definition_by_number(field_number: str) -> dict | None:
+    """
+    Recherche EXACTE par numéro de champ (metadata field_number) dans la
+    collection hps_specifications, via requête SQL directe.
+    """
+    try:
+        from sqlalchemy import create_engine, text
+        import json
+
+        engine = create_engine(CONNECTION_STRING)
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT document, cmetadata FROM langchain_pg_embedding "
+                    "WHERE cmetadata->>'type' = 'field_definition' "
+                    "AND cmetadata->>'field_number' = :field_number "
+                    "LIMIT 1"
+                ),
+                {"field_number": field_number},
+            ).fetchone()
+
+        if not row:
+            return None
+
+        content, meta = row[0], row[1]
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+
+        return {
+            "field_number": meta.get("field_number"),
+            "field_name": meta.get("field_name"),
+            "attributes": meta.get("attributes", ""),
+            "source_file": meta.get("source_file"),
+            "full_content": content,
+        }
+    except Exception as e:
+        print(f"⚠️ Recherche exacte par field_number échouée pour '{field_number}' : {e}")
+        return None
+
+
+def query_field_definition(field_name: str, k: int = 1) -> dict | None:
+    """
+    Recherche la définition d'un champ (chapitre 4 du PDF) : priorité à une
+    correspondance EXACTE sur le numéro de champ si la requête en contient
+    un (ex: "Field 37"), sinon recherche sémantique filtrée sur
+    type=field_definition (ex: "PAN" -> Field 2-Primary Account Number).
+    """
+    number_match = FIELD_NUMBER_RE.search(field_name)
+    if number_match:
+        exact_result = _query_field_definition_by_number(number_match.group(1))
+        if exact_result:
+            return exact_result
+
+    try:
+        db = get_vectorstore()
+        docs = db.similarity_search(
+            field_name,
+            k=k,
+            filter={"type": "field_definition"},
+        )
+    except Exception as e:
+        print(f"⚠️ Recherche sémantique de définition de champ échouée pour '{field_name}' : {e}")
+        return None
+
+    if not docs:
+        return None
+
+    doc = docs[0]
+    return {
+        "field_number": doc.metadata.get("field_number"),
+        "field_name": doc.metadata.get("field_name"),
+        "attributes": doc.metadata.get("attributes", ""),
+        "source_file": doc.metadata.get("source_file"),
+        "full_content": doc.page_content,
+    }

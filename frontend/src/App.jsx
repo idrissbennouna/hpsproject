@@ -12,6 +12,7 @@ function App() {
   
   // States for Logs Analysis module
   const [file, setFile] = useState(null);
+  const [docFile, setDocFile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState("");
   const [error, setError] = useState("");
@@ -41,6 +42,10 @@ function App() {
     setError("");
   };
 
+  const handleDocFileChange = (e) => {
+    setDocFile(e.target.files[0]);
+  };
+
   const runLogAnalysis = async () => {
     if (!file) {
       setError("Veuillez sélectionner un fichier de traces (.TXT) avant de lancer l'analyse.");
@@ -54,7 +59,11 @@ function App() {
 
     const formData = new FormData();
     formData.append("file", file);
-   
+    
+    if (docFile) {
+      formData.append("doc_file", docFile);
+    }
+
     const cleanPrompt = prompt.trim() === "" 
       ? "Génère-moi la story complète de mon fichier de traces et vérifie s'il y a des alertes de non-conformité." 
       : prompt;
@@ -178,6 +187,23 @@ function App() {
                     <label htmlFor="file-upload" className="file-label">
                       <span></span>
                       <span>{file ? ` ${file.name}` : "Glisser ou charger un fichier de logs"}</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <label className="label">Document de spécification (optionnel) :</label>
+                  <div className="file-upload-box">
+                    <input
+                      type="file"
+                      accept=".pdf,.PDF"
+                      onChange={handleDocFileChange}
+                      className="file-input"
+                      id="doc-file-upload"
+                    />
+                    <label htmlFor="doc-file-upload" className="file-label">
+                      <span></span>
+                      <span>{docFile ? ` ${docFile.name}` : "Déposer un document (PDF) pour cette analyse"}</span>
                     </label>
                   </div>
                 </div>

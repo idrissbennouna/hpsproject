@@ -2,21 +2,24 @@ import os
 import shutil
 import html
 import re
+import io
+import tempfile
 from pathlib import Path
+from typing import List, Optional
+
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
-# Load environment variables
+# Chargement des variables d'environnement
 load_dotenv()
 
-# Import de ton application LangGraph compilée
+# Importations des applications LangGraph
 from app.core.agent_graph import compliance_agent_app
 from app.core.validation_agent_graph import validation_agent_app
-from pydantic import BaseModel, Field
-from typing import List, Optional
 
 app = FastAPI(
     title="ComplianceVerifier API - HPS",
@@ -33,48 +36,257 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Résolution du dossier storage pour sauvegarder les fichiers téléversés
+# Résolution sécurisée du dossier de stockage
 CURRENT_DIR = Path(__file__).resolve().parent
 STORAGE_DIR = CURRENT_DIR / "storage"
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-# 2. Route de base
+# --- Utilitaires Internes ---
+
+def _normalize_response_text(content: any) -> str:
+    """Normalise le contenu textuel renvoyé par les agents (liste, dict, objet ou None)."""
+    if content is None:
+        return ""
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                parts.append(block.get("text", str(block)))
+            elif hasattr(block, "text"):
+                parts.append(getattr(block, "text", str(block)))
+            else:
+                parts.append(str(block))
+        return "\n".join(parts)
+    return str(content)
+
+
+def _generate_reportlab_pdf(final_report_text: str, agent_assigned: str, filename: str, pdf_path: Path) -> None:
+    """Génère le rapport PDF sécurisé avec la charte graphique HPS."""
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib import colors
+
+    doc = SimpleDocTemplate(
+        str(pdf_path), 
+        pagesize=letter, 
+        rightMargin=54, leftMargin=54, 
+        topMargin=54, bottomMargin=54
+    )
+    story = []
+    styles = getSampleStyleSheet()
+
+    # Style Charte HPS
+    title_style = ParagraphStyle(
+        'DocTitle', parent=styles['Heading1'], fontSize=22, leading=26,
+        textColor=colors.HexColor('#0F172A'), spaceAfter=5, alignment=0
+    )
+    section_style = ParagraphStyle(
+        'SectionTitle', parent=styles['Heading2'], fontSize=14, leading=18,
+        textColor=colors.HexColor('#1E3A8A'), spaceBefore=18, spaceAfter=10, keepWithNext=True
+    )
+    body_style = ParagraphStyle(
+        'ReportBody', parent=styles['Normal'], fontSize=10, leading=15,
+        textColor=colors.HexColor('#334155'), spaceAfter=8
+    )
+    header_text_style = ParagraphStyle(
+        'HeaderText', parent=styles['Normal'], fontSize=8, leading=10,
+        textColor=colors.HexColor('#64748B'), alignment=2
+    )
+    table_header_style = ParagraphStyle(
+        'TableHeader', parent=body_style, fontSize=10, textColor=colors.white
+    )
+
+    # Logo
+    logo_path = STORAGE_DIR / "HPS_logo.png"
+    if logo_path.exists():
+        logo_img = Image(str(logo_path), width=100, height=35)
+        logo_img.hAlign = 'LEFT'
+        story.append(logo_img)
+        story.append(Spacer(1, 10))
+
+    # En-tête & Titre
+    story.append(Paragraph("<b>HPS ComplianceAI Platform</b> — Automated Log Verification Terminal", header_text_style))
+    story.append(Spacer(1, 15))
+    story.append(Paragraph("Rapport de Validation Monétique", title_style))
+    story.append(Paragraph("<font color='#64748B'><i>Analyse automatisée de conformité des traces d'autorisation</i></font>", body_style))
+    story.append(Spacer(1, 15))
+
+    # Métadonnées
+    meta_data = [
+        [Paragraph("<b>Paramètre d'Audit</b>", table_header_style), Paragraph("<b>Valeur / Référence</b>", table_header_style)],
+        [Paragraph("Fichier Trace Source", body_style), Paragraph(filename, body_style)], 
+        [Paragraph("Référence Spécification", body_style), Paragraph("Spec_PowerCARD.xlsx", body_style)],
+        [Paragraph("Moteur d'Analyse", body_style), Paragraph(agent_assigned, body_style)],
+        [Paragraph("Statut Système", body_style), Paragraph("Analyse Terminée (200 OK)", body_style)]
+    ]
+    
+    meta_table = Table(meta_data, colWidths=[160, 340])
+    meta_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (1, 0), colors.HexColor('#1E3A8A')), 
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('LINEBELOW', (0, 0), (-1, -1), 0.5, colors.HexColor('#E2E8F0')),
+    ]))
+    
+    story.append(meta_table)
+    story.append(Spacer(1, 15))
+
+    # Résultats de l'analyse
+    story.append(Paragraph("Résultats de l'Analyse Agentique", section_style))
+
+    for line in final_report_text.split("\n"):
+        if line.strip():
+            safe_line = html.escape(line)
+            if safe_line.strip().startswith("#### "):
+                safe_line = "<b>" + safe_line.replace("#### ", "", 1) + "</b>"
+            if safe_line.strip().startswith("* "):
+                safe_line = safe_line.replace("* ", "&bull; ", 1)
+            safe_line = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', safe_line)
+            safe_line = re.sub(r'`(.*?)`', r'<b>\1</b>', safe_line)
+            story.append(Paragraph(safe_line, body_style))
+
+    doc.build(story)
+
+
+def _process_and_index_pdf(file_bytes: bytes, filename: str, session_id: str) -> dict:
+    """Traite et indexe un fichier PDF pour la session de validation."""
+    import pdfplumber
+    from langchain_core.documents import Document
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    from app.rag.retriever import get_session_vectorstore, delete_session_documents, batch_add_documents, QuotaExhaustedError
+    from app.core.config import MAX_PDF_PAGES, PDF_CHUNK_SIZE, PDF_CHUNK_OVERLAP, EMBEDDING_BATCH_SIZE, EMBEDDING_BATCH_DELAY_SECONDS
+
+    documents = []
+    pages_with_text = 0
+
+    try:
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            total_pages = len(pdf.pages)
+
+            if total_pages > MAX_PDF_PAGES:
+                return {
+                    "success": False,
+                    "error_type": "too_many_pages",
+                    "filename": filename,
+                    "message": f"Le nombre de pages ({total_pages}) dépasse la limite autorisée de {MAX_PDF_PAGES} pages."
+                }
+
+            delete_session_documents(session_id)
+
+            for idx, page in enumerate(pdf.pages, 1):
+                page_text = page.extract_text() or ""
+                if page_text.strip():
+                    pages_with_text += 1
+                    documents.append(Document(
+                        page_content=page_text,
+                        metadata={
+                            "session_id": session_id,
+                            "source": filename,
+                            "page": idx
+                        }
+                    ))
+    except Exception as pdf_err:
+        return {
+            "success": False,
+            "error_type": "pdf_error",
+            "filename": filename,
+            "message": f"Fichier PDF invalide ou illisible : {pdf_err}",
+            "total_pages": 0,
+            "extracted_text": ""
+        }
+
+    if total_pages > 0 and (pages_with_text == 0 or (pages_with_text / total_pages) < 0.5):
+        msg = ("Aucun texte extractible trouvé dans le document PDF. Le fichier est probablement scanné."
+               if pages_with_text == 0 else
+               f"Seulement {pages_with_text}/{total_pages} pages contiennent du texte extractible. Le document semble majoritairement scanné.")
+        return {
+            "success": False,
+            "error_type": "scanned_pdf",
+            "filename": filename,
+            "message": msg,
+            "total_pages": total_pages,
+            "extracted_text": ""
+        }
+
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=PDF_CHUNK_SIZE, chunk_overlap=PDF_CHUNK_OVERLAP)
+    chunks = text_splitter.split_documents(documents)
+
+    session_db = get_session_vectorstore()
+    try:
+        indexed_count = batch_add_documents(
+            session_db,
+            chunks,
+            batch_size=EMBEDDING_BATCH_SIZE,
+            inter_batch_delay=EMBEDDING_BATCH_DELAY_SECONDS,
+            session_id=session_id
+        )
+        print(f"[INDEX_SUCCESS] Session '{session_id}': {indexed_count}/{len(chunks)} chunks indexés.")
+    except QuotaExhaustedError as qe:
+        return {
+            "success": False,
+            "error_type": "quota_exhausted",
+            "filename": filename,
+            "indexed": qe.indexed_count,
+            "total": qe.total_chunks,
+            "message": f"Quota API atteint après l'indexation de {qe.indexed_count}/{qe.total_chunks} chunks."
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error_type": "ingestion_failed",
+            "filename": filename,
+            "message": f"Erreur lors de l'indexation vectorielle du PDF : {str(e)}"
+        }
+
+    return {
+        "success": True,
+        "filename": filename,
+        "message": "Fichier éphémère extrait et chargé dans la session avec succès.",
+        "total_pages": total_pages,
+        "extracted_text": f"[Document PDF indexé dans la base vectorielle RAG de session. Total : {total_pages} pages.]"
+    }
+
+
+# --- Endpoints API ---
+
 @app.get("/")
 def read_root():
     return {"status": "online", "message": "Serveur ComplianceVerifier opérationnel"}
 
 
-# 3. Route principale : Analyse de Logs par le Système Multi-Agents
 @app.post("/api/v1/logs/analyze")
 async def analyze_logs(
     user_prompt: str = Form(...), 
     file: UploadFile = File(...)
 ):
     """
-    Reçoit un fichier de traces .TXT et un prompt utilisateur,
-    sauvegarde le fichier localement, l'analyse via LangGraph + Gemini,
-    et génère un rapport PDF d'audit technique exclusif pour les testeurs HPS.
+    Reçoit un fichier de traces (.TXT, .LOG, .TRC, .DAT), analyse son contenu
+    via le graphe d'agents et produit un rapport PDF.
     """
-    filename_lower = file.filename.lower()
+    safe_filename = Path(file.filename).name
+    filename_lower = safe_filename.lower()
     is_trace_file = any(filename_lower.endswith(ext) for ext in ('.txt', '.log', '.trc', '.dat')) or '.trc' in filename_lower
+    
     if not is_trace_file:
         raise HTTPException(status_code=400, detail="Seuls les fichiers de traces (.TXT, .LOG, .TRC, .DAT) sont acceptés.")
     
-    target_file_path = STORAGE_DIR / file.filename
+    target_file_path = STORAGE_DIR / safe_filename
     
     try:
         with target_file_path.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-            
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Échec de l'écriture du fichier : {str(e)}")
         
     try:
-        # 1. Lancement de ton architecture agentique LangGraph
         graph_inputs = {
             "user_prompt": user_prompt,
-            "file_name": file.filename,
+            "file_name": safe_filename,
             "current_agent": "",
             "rag_context": "",
             "log_data_json": "",
@@ -83,186 +295,29 @@ async def analyze_logs(
         
         execution_result = await run_in_threadpool(compliance_agent_app.invoke, graph_inputs)
         
-        final_report_text = execution_result.get("final_response", "Aucun rapport généré.")
+        raw_report = execution_result.get("final_response", "Aucun rapport généré.")
+        final_report_text = _normalize_response_text(raw_report)
         agent_assigned = execution_result.get("current_agent", "ComplianceAuditorAgent")
         
-        # 2. Génération du PDF avec design Corporate HPS (Dédié Testeurs & QA)
-        pdf_path = STORAGE_DIR / "Rapport_Compliance_HPS.pdf"
+        # Nom de fichier PDF spécifique pour éviter les conflits d'accès concurents
+        pdf_filename = f"Rapport_{Path(safe_filename).stem}.pdf"
+        pdf_path = STORAGE_DIR / pdf_filename
         
         try:
-            from reportlab.lib.pagesizes import letter
-            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
-            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-            from reportlab.lib import colors
-            
-            # Configuration du document avec des marges pro
-            doc = SimpleDocTemplate(
-                str(pdf_path), 
-                pagesize=letter, 
-                rightMargin=54, leftMargin=54, 
-                topMargin=54, bottomMargin=54
-            )
-            story = []
-            styles = getSampleStyleSheet()
-            
-            # --- Charte Graphique HPS ---
-            title_style = ParagraphStyle(
-                'DocTitle', 
-                parent=styles['Heading1'], 
-                fontSize=22, 
-                leading=26, 
-                textColor=colors.HexColor('#0F172A'), 
-                spaceAfter=5,
-                alignment=0
-            )
-            
-            section_style = ParagraphStyle(
-                'SectionTitle', 
-                parent=styles['Heading2'], 
-                fontSize=14, 
-                leading=18, 
-                textColor=colors.HexColor('#1E3A8A'), 
-                spaceBefore=18,
-                spaceAfter=10,
-                keepWithNext=True
-            )
-            
-            body_style = ParagraphStyle(
-                'ReportBody', 
-                parent=styles['Normal'], 
-                fontSize=10, 
-                leading=15, 
-                textColor=colors.HexColor('#334155'), 
-                spaceAfter=8
-            )
-
-            header_text_style = ParagraphStyle(
-                'HeaderText',
-                parent=styles['Normal'],
-                fontSize=8,
-                leading=10,
-                textColor=colors.HexColor('#64748B'),
-                alignment=2
-            )
-            
-            table_header_style = ParagraphStyle(
-                'TableHeader', 
-                parent=body_style, 
-                fontSize=10, 
-                textColor=colors.white
-            )
-            
-            # --- 0. Insertion du Logo HPS ---
-            logo_path = STORAGE_DIR / "HPS_logo.png"
-            if logo_path.exists():
-                logo_img = Image(str(logo_path), width=100, height=35)
-                logo_img.hAlign = 'LEFT'
-                story.append(logo_img)
-                story.append(Spacer(1, 10))
-            
-            # --- 1. En-tête Métier ---
-            story.append(Paragraph("<b>HPS ComplianceAI Platform</b> — Automated Log Verification Terminal", header_text_style))
-            story.append(Spacer(1, 15))
-            
-            # --- 2. Titre du Document ---
-            story.append(Paragraph("Rapport de Validation Monétique", title_style))
-            story.append(Paragraph("<font color='#64748B'><i>Analyse automatisée de conformité des traces d'autorisation</i></font>", body_style))
-            story.append(Spacer(1, 15))
-            
-            # --- 3. Tableau de bord technique ---
-            meta_data = [
-                [Paragraph("<b>Paramètre d'Audit</b>", table_header_style), Paragraph("<b>Valeur / Référence</b>", table_header_style)],
-                [Paragraph("Fichier Trace Source", body_style), Paragraph(file.filename, body_style)], 
-                [Paragraph("Référence Spécification", body_style), Paragraph("Spec_PowerCARD.xlsx", body_style)],
-                [Paragraph("Moteur d'Analyse", body_style), Paragraph(agent_assigned, body_style)],
-                [Paragraph("Statut Système", body_style), Paragraph("Analyse Terminée (200 OK)", body_style)]
-            ]
-            
-            meta_table = Table(meta_data, colWidths=[160, 340])
-            meta_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (1, 0), colors.HexColor('#1E3A8A')), 
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                ('TOPPADDING', (0, 0), (-1, -1), 6),
-                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('LINEBELOW', (0, 0), (-1, -1), 0.5, colors.HexColor('#E2E8F0')),
-            ]))
-            
-            story.append(meta_table)
-            story.append(Spacer(1, 15))
-            
-            # --- 4. Section : Résultats de l'Analyse Dynamique ---
-            story.append(Paragraph("Résultats de l'Analyse Agentique", section_style))
-            
-            # Traitement sécurisé du texte ligne par ligne
-            if isinstance(final_report_text, list):
-                print(f"⚠️ [WARNING] final_report_text is a list instead of string! Normalizing list: {final_report_text}")
-                parts = []
-                for block in final_report_text:
-                    if isinstance(block, str):
-                        parts.append(block)
-                    elif isinstance(block, dict):
-                        parts.append(block.get("text", str(block)))
-                    elif hasattr(block, "text"):
-                        parts.append(block.text)
-                    else:
-                        parts.append(str(block))
-                final_report_text = "\n".join(parts)
-            elif final_report_text is None:
-                final_report_text = ""
-            else:
-                final_report_text = str(final_report_text)
-
-            for line in final_report_text.split("\n"):
-                if line.strip():
-                    # 1. Échappement HTML global indispensable pour ReportLab
-                    safe_line = html.escape(line)
-                    
-                    # 2. Conversion des structures de titres Markdown
-                    if safe_line.strip().startswith("#### "):
-                        safe_line = "<b>" + safe_line.replace("#### ", "", 1) + "</b>"
-                    
-                    # 3. Remplacement propre des puces de listes (* )
-                    if safe_line.strip().startswith("* "):
-                        safe_line = safe_line.replace("* ", "&bull; ", 1)
-                        
-                    # 4. Traduction Regex sécurisée du gras (**texte** -> <b>texte</b>)
-                    safe_line = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', safe_line)
-                        
-                    # 5. Traduction Regex sécurisée des backticks (`code` -> <b>code</b>)
-                    safe_line = re.sub(r'`(.*?)`', r'<b>\1</b>', safe_line)
-                    
-                    story.append(Paragraph(safe_line, body_style))
-            
-            doc.build(story)
-            
+            await run_in_threadpool(_generate_reportlab_pdf, final_report_text, agent_assigned, safe_filename, pdf_path)
         except Exception as pdf_err:
-            print(f"Erreur lors du formatage du PDF professionnel : {str(pdf_err)}")
-            # 💡 BLINDAGE : Génération d'un VRAI PDF en cas d'erreur pour éviter l'écran noir du navigateur
+            print(f"Erreur lors de la génération du PDF principal : {str(pdf_err)}")
             try:
+                from reportlab.lib.pagesizes import letter
+                from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+                from reportlab.lib.styles import getSampleStyleSheet
+                
                 doc_fail = SimpleDocTemplate(str(pdf_path), pagesize=letter)
                 styles_fail = getSampleStyleSheet()
                 story_fail = [
                     Paragraph("<b>Rapport d'Audit (Mode Restauré)</b>", styles_fail['Heading1']),
                     Spacer(1, 15)
                 ]
-                if isinstance(final_report_text, list):
-                    print(f"⚠️ [WARNING] final_report_text (fallback) is a list instead of string! Normalizing list: {final_report_text}")
-                    parts = []
-                    for block in final_report_text:
-                        if isinstance(block, str):
-                            parts.append(block)
-                        elif isinstance(block, dict):
-                            parts.append(block.get("text", str(block)))
-                        elif hasattr(block, "text"):
-                            parts.append(block.text)
-                        else:
-                            parts.append(str(block))
-                    final_report_text = "\n".join(parts)
-                elif final_report_text is None:
-                    final_report_text = ""
-                else:
-                    final_report_text = str(final_report_text)
-
                 for raw_line in final_report_text.split("\n"):
                     if raw_line.strip():
                         story_fail.append(Paragraph(html.escape(raw_line), styles_fail['Normal']))
@@ -270,12 +325,12 @@ async def analyze_logs(
             except Exception as final_err:
                 print(f"Échec critique du fallback PDF : {str(final_err)}")
         
-        # 3. Réponse JSON
         return {
             "success": True,
             "agent_assigned": agent_assigned,
             "log_chronology": execution_result.get("log_data_json"),
-            "analysis_report": final_report_text
+            "analysis_report": final_report_text,
+            "pdf_filename": pdf_filename
         }
         
     except Exception as e:
@@ -288,43 +343,37 @@ async def analyze_logs(
         raise HTTPException(status_code=500, detail=f"Erreur lors de l'analyse agentique : {str(e)}")
 
 
-# 4. Route de téléchargement PDF alignée
 @app.get("/api/v1/logs/download-pdf")
-async def download_pdf():
-    pdf_path = STORAGE_DIR / "Rapport_Compliance_HPS.pdf"
+async def download_pdf(filename: Optional[str] = "Rapport_Compliance_HPS.pdf"):
+    """Permet le téléchargement du rapport PDF généré."""
+    safe_filename = Path(filename).name
+    pdf_path = STORAGE_DIR / safe_filename
     
-    # Si le fichier existe et qu'il contient bien le rapport, on le renvoie direct
     if pdf_path.exists() and pdf_path.stat().st_size > 1000:
         return FileResponse(
             path=str(pdf_path), 
-            filename="Rapport_Compliance_HPS.pdf", 
+            filename=safe_filename, 
             media_type="application/pdf"
         )
     
-    # Si aucun rapport n'a encore été généré par l'analyse
     raise HTTPException(
         status_code=404, 
-        detail="Aucun rapport d'analyse disponible. Veuillez d'abord exécuter l'analyse."
+        detail="Aucun rapport d'analyse disponible sous ce nom. Veuillez exécuter l'analyse au préalable."
     )
 
-# --- CLASSE DE REQUÊTE POUR L'AGENT 2 ---
+
 class ValidationRequest(BaseModel):
     question: str
     chat_history: Optional[List[dict]] = Field(default_factory=list)
     session_id: Optional[str] = None
 
-# 5. Route d'interrogation de l'Agent 2
+
 @app.post("/api/v1/validation/ask")
 async def ask_validation_agent(request: ValidationRequest):
-    """
-    Interroge l'Agent 2 pour poser une question sur les spécifications PowerCARD.
-    """
+    """Interroge l'agent de validation sur les spécifications PowerCARD."""
     question = request.question.strip()
     if not question:
-        raise HTTPException(
-            status_code=400, 
-            detail="La question ne peut pas être vide."
-        )
+        raise HTTPException(status_code=400, detail="La question ne peut pas être vide.")
 
     try:
         inputs = {
@@ -336,33 +385,11 @@ async def ask_validation_agent(request: ValidationRequest):
             "sources": []
         }
         
-        # Invocation du graphe de validation
-        result = validation_agent_app.invoke(inputs)
+        result = await run_in_threadpool(validation_agent_app.invoke, inputs)
+        final_response = _normalize_response_text(result.get("final_response", ""))
         
-        final_response = result.get("final_response", "")
-        
-        # Normalisation défensive au niveau du controleur API
-        if isinstance(final_response, list):
-            print(f"⚠️ [WARNING] final_response in ask_validation_agent is a list! Normalizing list: {final_response}")
-            parts = []
-            for block in final_response:
-                if isinstance(block, str):
-                    parts.append(block)
-                elif isinstance(block, dict):
-                    parts.append(block.get("text", str(block)))
-                elif hasattr(block, "text"):
-                    parts.append(block.text)
-                else:
-                    parts.append(str(block))
-            final_response = "\n".join(parts)
-        elif final_response is None:
-            final_response = ""
-        else:
-            final_response = str(final_response)
-
-        # Utilisation des sources structurées définies par retriever_node
         raw_sources = result.get("sources", [])
-        sources = [s["label"] for s in raw_sources] if raw_sources else []
+        sources = [s["label"] for s in raw_sources if isinstance(s, dict) and "label" in s] if raw_sources else []
  
         return {
             "response": final_response,
@@ -381,115 +408,7 @@ async def ask_validation_agent(request: ValidationRequest):
             detail=f"Erreur lors de l'exécution de l'agent de validation : {str(e)}"
         )
 
-def _process_and_index_pdf(file_bytes: bytes, filename: str, session_id: str) -> dict:
-    import io
-    import pdfplumber
-    from langchain_core.documents import Document
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
-    from app.rag.retriever import get_session_vectorstore, delete_session_documents, batch_add_documents, QuotaExhaustedError
-    from app.core.config import MAX_PDF_PAGES, PDF_CHUNK_SIZE, PDF_CHUNK_OVERLAP, EMBEDDING_BATCH_SIZE, EMBEDDING_BATCH_DELAY_SECONDS
 
-    documents = []
-    pages_with_text = 0
-
-    try:
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            total_pages = len(pdf.pages)
-
-            if total_pages > MAX_PDF_PAGES:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Le nombre de pages ({total_pages}) dépasse la limite autorisée de {MAX_PDF_PAGES} pages."
-                )
-
-            # 1. Toujours supprimer les anciens documents vectoriels de la session en premier
-            delete_session_documents(session_id)
-
-            # 2. Extraction du texte page par page avec pdfplumber
-            for idx, page in enumerate(pdf.pages, 1):
-                page_text = page.extract_text() or ""
-                if page_text.strip():
-                    pages_with_text += 1
-                    documents.append(Document(
-                        page_content=page_text,
-                        metadata={
-                            "session_id": session_id,
-                            "source": filename,
-                            "page": idx
-                        }
-                    ))
-    except HTTPException:
-        raise
-    except Exception as pdf_err:
-        return {
-            "success": False,
-            "error_type": "pdf_error",
-            "filename": filename,
-            "message": f"Fichier PDF invalide ou illisible : {pdf_err}",
-            "total_pages": 0,
-            "extracted_text": ""
-        }
-
-    # 3. Détection des PDF scannés / images sans texte extractible
-    if total_pages > 0 and (pages_with_text == 0 or (pages_with_text / total_pages) < 0.5):
-        if pages_with_text == 0:
-            msg = "Aucun texte extractible trouvé dans le document PDF. Le fichier est probablement un document scanné ou composé uniquement d'images."
-        else:
-            msg = f"Seulement {pages_with_text}/{total_pages} pages contiennent du texte extractible. Le document semble être majoritairement scanné ou composé d'images."
-        return {
-            "success": False,
-            "error_type": "scanned_pdf",
-            "filename": filename,
-            "message": msg,
-            "total_pages": total_pages,
-            "extracted_text": ""
-        }
-
-
-    # 4. Decoupage en chunks et ingestion par lots
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=PDF_CHUNK_SIZE, chunk_overlap=PDF_CHUNK_OVERLAP)
-    chunks = text_splitter.split_documents(documents)
-
-    session_db = get_session_vectorstore()
-    try:
-        indexed_count = batch_add_documents(
-            session_db,
-            chunks,
-            batch_size=EMBEDDING_BATCH_SIZE,
-            inter_batch_delay=EMBEDDING_BATCH_DELAY_SECONDS,
-            session_id=session_id
-        )
-        print(f"[INDEX_SUCCESS] Session '{session_id}': {indexed_count}/{len(chunks)} chunks indexés avec succès.")
-    except QuotaExhaustedError as qe:
-        return {
-            "success": False,
-            "error_type": "quota_exhausted",
-            "filename": filename,
-            "indexed": qe.indexed_count,
-            "total": qe.total_chunks,
-            "message": f"Gemini free-tier quota exhausted after indexing {qe.indexed_count}/{qe.total_chunks} chunks. Try again later or reduce document size."
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "error_type": "ingestion_failed",
-            "filename": filename,
-            "message": f"Erreur lors de l'indexation vectorielle du document PDF : {str(e)}"
-        }
-
-    content = f"[Document PDF indexé dans la base vectorielle RAG de session. Total : {total_pages} pages.]"
-    return {
-        "success": True,
-        "filename": filename,
-        "message": "Fichier éphémère extrait et chargé dans la session avec succès.",
-        "total_pages": total_pages,
-        "extracted_text": content
-    }
-
-
-
-
-# 6. Route d'upload de fichiers éphémères pour l'Agent 2
 @app.post("/api/v1/validation/upload")
 async def upload_validation_file(
     file: UploadFile = File(...),
@@ -499,10 +418,12 @@ async def upload_validation_file(
     Reçoit un fichier (.TXT, .PDF, .XLSX), extrait son texte brut, 
     et l'enregistre en mémoire sous le session_id fourni.
     """
-    filename = file.filename.lower()
-    is_trace_file = any(filename.endswith(ext) for ext in ('.txt', '.log', '.trc', '.dat')) or '.trc' in filename
-    is_pdf_file = filename.endswith('.pdf')
-    is_excel_file = filename.endswith('.xlsx') or filename.endswith('.xls')
+    safe_filename = Path(file.filename).name
+    filename_lower = safe_filename.lower()
+    
+    is_trace_file = any(filename_lower.endswith(ext) for ext in ('.txt', '.log', '.trc', '.dat')) or '.trc' in filename_lower
+    is_pdf_file = filename_lower.endswith('.pdf')
+    is_excel_file = filename_lower.endswith('.xlsx') or filename_lower.endswith('.xls')
 
     if not (is_trace_file or is_pdf_file or is_excel_file):
         raise HTTPException(
@@ -511,13 +432,11 @@ async def upload_validation_file(
         )
 
     try:
-        import io
         from app.services.session_storage import add_session_file, compute_file_stats
         from app.core.config import MAX_UPLOAD_SIZE_BYTES, MAX_UPLOAD_SIZE_MB
 
         file_bytes = await file.read()
 
-        # Garde-fou taille maximale de fichier
         if len(file_bytes) > MAX_UPLOAD_SIZE_BYTES:
             raise HTTPException(
                 status_code=400,
@@ -529,10 +448,11 @@ async def upload_validation_file(
 
         # Extraction de texte par type de fichier
         if is_trace_file:
-            import tempfile
+            # Gestion propre du fichier temporaire avec tempfile
             with tempfile.NamedTemporaryFile(delete=False, suffix=".TXT") as temp_file:
                 temp_file.write(file_bytes)
                 temp_path = temp_file.name
+
             try:
                 from app.services.log_parser import parse_and_format_log_file
                 content = parse_and_format_log_file(temp_path)
@@ -542,35 +462,17 @@ async def upload_validation_file(
                     content = file_bytes.decode("utf-8", errors="ignore")
                     parsed_log_successfully = False
             finally:
-                try:
+                if os.path.exists(temp_path):
                     os.remove(temp_path)
-                except Exception:
-                    pass
             
-        elif filename.endswith('.pdf'):
-            pdf_res = await run_in_threadpool(_process_and_index_pdf, file_bytes, file.filename, session_id)
+        elif is_pdf_file:
+            pdf_res = await run_in_threadpool(_process_and_index_pdf, file_bytes, safe_filename, session_id)
             if not pdf_res["success"]:
-                if pdf_res.get("error_type") == "quota_exhausted":
-                    return JSONResponse(
-                        status_code=503,
-                        content={
-                            "error": "quota_exhausted",
-                            "indexed": pdf_res.get("indexed", 0),
-                            "total": pdf_res.get("total", 0),
-                            "message": pdf_res["message"]
-                        }
-                    )
-                return JSONResponse(
-                    status_code=400,
-                    content={
-                        "success": False,
-                        "error_type": pdf_res.get("error_type", "pdf_error"),
-                        "message": pdf_res["message"]
-                    }
-                )
+                status_code = 503 if pdf_res.get("error_type") == "quota_exhausted" else 400
+                return JSONResponse(status_code=status_code, content=pdf_res)
             content = pdf_res["extracted_text"]
 
-        elif filename.endswith('.xlsx'):
+        elif is_excel_file:
             import openpyxl
             wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
             sheet_blocks = []
@@ -578,7 +480,6 @@ async def upload_validation_file(
                 ws = wb[sheet_name]
                 sheet_blocks.append(f"--- Onglet Excel : {sheet_name} ---")
                 for r_idx, row in enumerate(ws.iter_rows(values_only=True), 1):
-                    # Convertit la ligne en texte si non vide
                     row_str = " | ".join([str(val).strip() for val in row if val is not None])
                     if row_str.strip():
                         sheet_blocks.append(f"Ligne {r_idx}: {row_str}")
@@ -586,8 +487,8 @@ async def upload_validation_file(
 
         # Calcul des stats sur le contenu complet avant toute troncature de fallback
         full_stats = compute_file_stats(content)
+        is_rag_file = is_pdf_file
 
-        is_rag_file = filename.endswith('.pdf')
         if is_rag_file or parsed_log_successfully:
             # Transmet l'intégralité du contenu parsé (toutes les transactions, hors heartbeats)
             full_stats["truncated_for_llm"] = False
@@ -603,12 +504,11 @@ async def upload_validation_file(
                     f"sur {full_stats['char_count']} au total.]"
                 )
 
-        # Enregistrement dans la session correspondante
-        add_session_file(session_id, file.filename, content, full_stats=full_stats, is_rag=is_rag_file)
+        add_session_file(session_id, safe_filename, content, full_stats=full_stats, is_rag=is_rag_file)
 
         return {
             "success": True,
-            "filename": file.filename,
+            "filename": safe_filename,
             "message": "Fichier éphémère extrait et chargé dans la session avec succès."
         }
 
@@ -620,32 +520,22 @@ async def upload_validation_file(
             detail=f"Échec de l'extraction ou du stockage du fichier : {str(e)}"
         )
 
-# 7. Endpoint d'usage de tokens
+
 @app.get("/api/v1/usage/summary")
 def get_tokens_usage_summary():
-    """
-    Retourne la consommation cumulée de tokens, le budget et le solde restant.
-    """
+    """Consommation cumulée de tokens."""
     try:
         from app.services.token_tracker import get_usage_summary
         return get_usage_summary()
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Échec de la récupération du résumé de consommation : {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Échec de la récupération du résumé : {str(e)}")
+
 
 @app.get("/api/v1/usage/history")
 def get_tokens_usage_history(limit: int = 50):
-    """
-    Retourne l'historique des appels LLM et de la consommation de jetons associée.
-    """
+    """Historique des appels LLM."""
     try:
         from app.services.token_tracker import get_usage_history
         return get_usage_history(limit)
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Échec de la récupération de l'historique de consommation : {str(e)}"
-        )
-
+        raise HTTPException(status_code=500, detail=f"Échec de la récupération de l'historique : {str(e)}")

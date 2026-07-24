@@ -20,11 +20,10 @@ from app.services.token_tracker import extract_token_usage, record_usage
 # Avant : load_dotenv() sans argument -> cherche le .env dans le cwd, ce qui
 # casse si uvicorn n'est pas lancé exactement depuis la racine de backend/.
 # Maintenant : chemin explicite, indépendant du dossier depuis lequel on lance la commande.
-# NB: ajuste le nombre de .parent si agent_graph.py n'est pas dans app/core/ ou app/services/
 _ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(dotenv_path=_ENV_PATH, override=True)
 
-# --- CONFIGURATION (avant : hardcodée, maintenant pilotable via .env) ---
+# --- CONFIGURATION (pilotable via .env) ---
 _BACKEND_DIR = _ENV_PATH.parent
 LOG_STORAGE_DIR = os.getenv("LOG_STORAGE_DIR", str(_BACKEND_DIR / "app" / "storage"))
 raw_model = os.getenv("GEMINI_MODEL_NAME", "gemini-3.5-flash")
@@ -32,10 +31,6 @@ GEMINI_MODEL_NAME = raw_model.strip() if raw_model else "gemini-3.5-flash"
 MAX_SUSPICIOUS_TRANSACTIONS = int(os.getenv("MAX_SUSPICIOUS_TRANSACTIONS", "10"))
 MAX_FALLBACK_TRANSACTIONS = int(os.getenv("MAX_FALLBACK_TRANSACTIONS", "5"))
 
-# Avant : google_api_key=os.getenv("GOOGLE_API_KEY") uniquement -> si le .env
-# ne contient que GEMINI_API_KEY, None écrase la détection automatique de la lib.
-# Maintenant : on accepte les deux noms, avec une erreur explicite si aucun n'est trouvé
-# (plutôt qu'un ValidationError pydantic opaque à l'import du module).
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
 
 # Affichage des valeurs résolues au démarrage
@@ -57,6 +52,7 @@ class AgentState(TypedDict):
     log_data_json: str
     final_response: str
     file_name: str
+    doc_session_id: str  # Conservé de ta version
 
 
 llm = ChatGoogleGenerativeAI(
@@ -81,14 +77,8 @@ def _resolve_log_path(filename: str) -> str:
 
 # --- NOEUD 1 : PARSER & CHRONOLOGY AGENT ---
 def parser_story_node(state: AgentState) -> Dict[str, Any]:
-    """
-    Étape 1 : utilise le parser local pour extraire les jalons et ne garde
-    que les transactions suspectes (anomalies) pour éviter le gaspillage de tokens.
-    """
     filename = state.get("file_name")
     if not filename:
-        # Avant : fallback silencieux vers "BASE1_LCH_2.TRC019.TXT" (typo incluse).
-        # Maintenant : on exige explicitement le nom du fichier, pas de valeur cachée.
         error_json = json.dumps({"error": "Aucun 'file_name' fourni dans l'état de l'agent."})
         return {"log_data_json": error_json, "current_agent": "ParserAgent"}
 
@@ -99,17 +89,27 @@ def parser_story_node(state: AgentState) -> Dict[str, Any]:
         )
         return {"log_data_json": error_json, "current_agent": "ParserAgent"}
 
-    all_parsed_transactions = parse_trace_file_for_story(log_file_path)
+    doc_session_id = state.get("doc_session_id")
+    all_parsed_transactions = parse_trace_file_for_story(log_file_path, doc_session_id=doc_session_id)
 
-    # Sécurité explicite : filtrage des heartbeats (is_heartbeat=True)
-    transactions_finales = [tx for tx in all_parsed_transactions if not tx.get("is_heartbeat")]
+    # Filtrage explicite des heartbeats
+    filtered_transactions = [tx for tx in all_parsed_transactions if not tx.get("is_heartbeat")]
 
-    log_data_json = json.dumps(transactions_finales, indent=2, ensure_ascii=False)
+    # Sélection des transactions suspectes (avec alertes)
+    suspicious_transactions = [tx for tx in filtered_transactions if tx.get("alerts_found")]
+
+    # Fallback : si aucune alerte détectée, prendre les N premières transactions
+    if not suspicious_transactions:
+        suspicious_transactions = filtered_transactions[:MAX_FALLBACK_TRANSACTIONS]
+    else:
+        suspicious_transactions = suspicious_transactions[:MAX_SUSPICIOUS_TRANSACTIONS]
+
+    log_data_json = json.dumps(suspicious_transactions, indent=2, ensure_ascii=False)
 
     return {"log_data_json": log_data_json, "current_agent": "ParserAgent"}
 
 
-# --- NOEUD 2 : RAG SPECIFICATION RETRIEVER (dynamique, plus de texte écrit à la main) ---
+# --- NOEUD 2 : RAG SPECIFICATION RETRIEVER ---
 def rag_spec_retriever_node(state: AgentState) -> Dict[str, Any]:
     """
     Étape 2 : extrait les fonctions en échec détectées par le parser et va
@@ -189,20 +189,17 @@ def compliance_auditor_node(state: AgentState) -> Dict[str, Any]:
         )),
     ])
 
-    # Invocation du modèle avec mécanisme de retry automatique
     response = invoke_llm_with_retry(llm, auditor_prompt.format_messages(
         user_prompt=state.get("user_prompt"),
         log_data_json=state.get("log_data_json"),
         rag_context=state.get("rag_context"),
     ))
 
-    # Tracking de tokens best-effort
     try:
         record_usage("ComplianceAuditor", extract_token_usage(response))
     except Exception as token_err:
         print(f"⚠️ Échec best-effort du tracking de tokens : {token_err}")
 
-    # Normalisation sécurisée de response.content
     content = response.content
     if isinstance(content, list):
         print(f"⚠️ [WARNING] response.content is a list instead of string! Normalizing list: {content}")
