@@ -95,6 +95,8 @@ def retriever_node(state: ValidationState) -> Dict[str, Any]:
 
         session_files = get_session_files(session_id)
         if session_files:
+            file_hashes = [f["file_hash"] for f in session_files if f.get("file_hash")]
+            
             file_blocks = []
             for file_info in session_files:
                 filename = file_info["name"]
@@ -116,7 +118,7 @@ def retriever_node(state: ValidationState) -> Dict[str, Any]:
                         is_broad_query = any(kw in q_lower for kw in broad_keywords)
                         session_k = 16 if is_broad_query else 4
 
-                        # 4. Hybrid Search: Vérification de motif spécifique (ex: Field 37, Champ 39, FLD 011, etc.)
+                        # Hybrid Search: Vérification de motif spécifique
                         import re
                         field_pattern = re.compile(r'(?:field|champ|fld)\s*0*(\d+)', re.IGNORECASE)
                         field_matches = field_pattern.findall(question)
@@ -124,7 +126,6 @@ def retriever_node(state: ValidationState) -> Dict[str, Any]:
                         keyword_docs = []
                         if field_matches:
                             for field_num in field_matches:
-                                # Chercher les motifs textuels probables : "Field 37", "Field37", "Champ 37", "FLD 037", "37"
                                 search_terms = [
                                     f"Field {field_num}",
                                     f"Field{field_num}",
@@ -135,14 +136,26 @@ def retriever_node(state: ValidationState) -> Dict[str, Any]:
                                     f"FLD {field_num}"
                                 ]
                                 for term in search_terms:
-                                    found = search_session_chunks_keyword(session_id, term, limit=3)
+                                    found = search_session_chunks_keyword(
+                                        session_id, 
+                                        term, 
+                                        file_hashes=file_hashes if file_hashes else None, 
+                                        limit=3
+                                    )
                                     if found:
                                         keyword_docs.extend(found)
+
+                        # Filter by file_hash if present for this file, else session_id fallback
+                        target_file_hash = file_info.get("file_hash")
+                        if target_file_hash:
+                            filter_dict = {"file_hash": target_file_hash}
+                        else:
+                            filter_dict = {"session_id": session_id}
 
                         semantic_docs = session_db.similarity_search(
                             search_query, 
                             k=session_k, 
-                            filter={"session_id": session_id}
+                            filter=filter_dict
                         )
 
                         # Fusion dédoublonnée (Keyword matches prioritaires)
