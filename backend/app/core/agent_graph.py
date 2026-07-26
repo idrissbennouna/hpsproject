@@ -28,8 +28,14 @@ _BACKEND_DIR = _ENV_PATH.parent
 LOG_STORAGE_DIR = os.getenv("LOG_STORAGE_DIR", str(_BACKEND_DIR / "app" / "storage"))
 raw_model = os.getenv("GEMINI_MODEL_NAME", "gemini-3.5-flash")
 GEMINI_MODEL_NAME = raw_model.strip() if raw_model else "gemini-3.5-flash"
-MAX_SUSPICIOUS_TRANSACTIONS = int(os.getenv("MAX_SUSPICIOUS_TRANSACTIONS", "10"))
-MAX_FALLBACK_TRANSACTIONS = int(os.getenv("MAX_FALLBACK_TRANSACTIONS", "5"))
+# Avant : le rapport ne montrait QUE les transactions "suspectes" (avec alerte),
+# avec un fallback vers les N premières SEULEMENT si aucune alerte n'existait.
+# Résultat : les transactions saines étaient silencieusement masquées du rapport.
+# Maintenant : on transmet TOUJOURS toutes les transactions (non-heartbeat) au LLM,
+# les suspectes étant simplement remontées en tête de liste pour être mises en avant.
+# MAX_TOTAL_TRANSACTIONS reste un garde-fou anti-explosion de prompt sur un fichier
+# avec des centaines de transactions, pas un filtre métier.
+MAX_TOTAL_TRANSACTIONS = int(os.getenv("MAX_TOTAL_TRANSACTIONS", "20"))
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
 
@@ -92,19 +98,20 @@ def parser_story_node(state: AgentState) -> Dict[str, Any]:
     doc_session_id = state.get("doc_session_id")
     all_parsed_transactions = parse_trace_file_for_story(log_file_path, doc_session_id=doc_session_id)
 
-    # Filtrage explicite des heartbeats
+    # Filtrage explicite des heartbeats (0800/0810) : jamais des transactions métier
     filtered_transactions = [tx for tx in all_parsed_transactions if not tx.get("is_heartbeat")]
 
-    # Sélection des transactions suspectes (avec alertes)
+    # Toutes les transactions sont transmises au rapport. Les suspectes (avec
+    # alertes_found non vide) sont simplement remontées en tête de liste pour
+    # que le LLM les mette en avant, sans que les transactions saines soient
+    # masquées du rapport.
     suspicious_transactions = [tx for tx in filtered_transactions if tx.get("alerts_found")]
+    clean_transactions = [tx for tx in filtered_transactions if not tx.get("alerts_found")]
+    ordered_transactions = suspicious_transactions + clean_transactions
 
-    # Fallback : si aucune alerte détectée, prendre les N premières transactions
-    if not suspicious_transactions:
-        suspicious_transactions = filtered_transactions[:MAX_FALLBACK_TRANSACTIONS]
-    else:
-        suspicious_transactions = suspicious_transactions[:MAX_SUSPICIOUS_TRANSACTIONS]
+    transactions_to_report = ordered_transactions[:MAX_TOTAL_TRANSACTIONS]
 
-    log_data_json = json.dumps(suspicious_transactions, indent=2, ensure_ascii=False)
+    log_data_json = json.dumps(transactions_to_report, indent=2, ensure_ascii=False)
 
     return {"log_data_json": log_data_json, "current_agent": "ParserAgent"}
 
@@ -171,11 +178,18 @@ def compliance_auditor_node(state: AgentState) -> Dict[str, Any]:
             "- La justification de chaque alerte ou comportement en faisant le lien avec le RAG Context (qui peut provenir des spécifications ou de documents PDF de documentation technique uploadés).\n"
             "- Des pistes de diagnostic (tables SQL ou configurations de routage à vérifier).\n\n"
             "Règles :\n"
+            "- IMPORTANT : le JSON des transactions fourni contient TOUTES les transactions de la trace "
+            "(pas un échantillon) — traite-les TOUTES sans exception, même s'il y en a beaucoup et même "
+            "si cela produit un rapport long. N'en omets, résume ou ne saute aucune.\n"
+            "- Pour chaque transaction qui a un champ `alerts_found` non vide, mets-la clairement en avant "
+            "(par exemple avec un marqueur '⚠️ SUSPECTE' ou équivalent) et place-la avant les transactions "
+            "sans alerte dans le rapport.\n"
             "- Analyse et expose aussi bien les fonctions en succès (OK) que les échecs, pour donner une vue complète.\n"
             "- Identifie clairement les valeurs des champs [FLD 037] et [FLD 039] et le statut d'approbation qui en découle.\n"
             "- Réponds également aux questions ou analyses demandées sur les documents de spécification ou guides techniques (fichiers PDF de documentation, etc.) s'ils sont fournis dans le contexte.\n"
-            "- Si le testeur demande uniquement la story, ne restitue QUE la story, sans mentionner les alertes "
-            "ni ajouter de justification ou de pistes de diagnostic, même si des alertes existent dans les données.\n"
+            "- Si le testeur demande uniquement la story, ne restitue QUE la story (mais pour TOUTES les "
+            "transactions fournies), sans mentionner les alertes ni ajouter de justification ou de pistes "
+            "de diagnostic, même si des alertes existent dans les données.\n"
             "- Si le testeur demande explicitement les alertes, la justification ou les pistes de diagnostic, "
             "inclus les sections correspondantes.\n"
             "- Si la demande est ambiguë ou générique (ex: \"analyse ce fichier\"), tu peux alors produire le "
@@ -184,7 +198,7 @@ def compliance_auditor_node(state: AgentState) -> Dict[str, Any]:
         )),
         ("user", (
             "Prompt de l'utilisateur : {user_prompt}\n\n"
-            "Données des transactions (JSON filtré des anomalies) :\n{log_data_json}\n\n"
+            "Données des transactions (JSON complet, TOUTES les transactions de la trace) :\n{log_data_json}\n\n"
             "Spécifications Applicables (RAG Context) :\n{rag_context}"
         )),
     ])

@@ -20,11 +20,15 @@ RE_FLD039_DUMP = re.compile(r"FLD\s*\(039\).*\[(\w+)\]")
 RE_MTI_1110 = re.compile(r"M\.T\.I\s*:\s*1110")
 
 # Extraction générique des champs ISO (pour alimenter le RAG)
-RE_FLD_GENERIC = re.compile(r"-\s*FLD\s*\((\d+)\)\s*\((\d+)\)\s*\[([^\]]*)\]")
+RE_FLD_GENERIC = re.compile(r"-\s*FLD\s*\((\d+)\)\s*:?\s*\((\d+)\)\s*:?\s*\[([^\]]*)\]")
 
 # Identification de session et triggers de début de transaction
 RE_SESSION = re.compile(r"^\S+\s+\S+\s+\S+\s+(\S+?)\|")
-RE_START_TRANSACTION = re.compile(r"Start\s+(?:Dump[A-Za-z0-9_]*|dump_buffer)\(\)", re.IGNORECASE)
+# Marqueur universel de nouveau message ISO 8583, independant du canal
+# (fonctionne aussi bien pour les dumps CIS "DumpCis()" que Visa/BASE I "DumpVisa()"
+# ou tout autre futur canal, car il se base sur l'entete MTI brute plutot que sur
+# le nom de la fonction de dump qui varie par protocole reseau).
+RE_START_TRANSACTION = re.compile(r"-\s*M\.T\.I\s*:\s*\[(\d{4})\]")
 
 # Extraction HSM & MTI (Mises à jour collègue)
 RE_TO_HSM = re.compile(r"TO\s+HSM\s*:\s*(?:Len=\[\d+\]-->\s*Data=)?\s*(.*?)$", re.IGNORECASE)
@@ -100,6 +104,73 @@ def _add_event(tx: dict, text: str) -> None:
         return
     tx["events"].append(text)
     tx["_last_event"] = text
+
+
+
+def _merge_request_response_pairs(all_transactions: list) -> list:
+    """Fusionne chaque fragment sans identifiant business propre (typiquement le
+    dump reseau initial ou le message reponse 0110/1110, qui n'ont pas le tag TLV
+    "INTERNAL STAN}"/"TRANSACTION_IDENTIFIER}") dans l'entree "primaire" qui, elle,
+    porte le STAN/transaction_id -> 1 transaction = 1 echange business complet.
+
+    Le fragment orphelin peut apparaitre AVANT ou APRES sa primaire dans le fichier
+    (le dump reseau et le traitement interne utilisent parfois des session_id
+    differents pour le meme echange business), donc on fait un premier passage
+    pour indexer toutes les primaires par RRN avant de fusionner, plutot que de
+    supposer un ordre chronologique fixe.
+    """
+    indexed = list(enumerate(all_transactions))
+
+    # Passage 1 : indexer chaque primaire (a un identifiant business) par RRN
+    primaries_by_rrn = {}
+    for idx, tx in indexed:
+        rrn = tx["identifiers"].get("rrn")
+        has_business_id = tx["identifiers"].get("stan") or tx["identifiers"].get("transaction_id")
+        if has_business_id and rrn and rrn not in primaries_by_rrn:
+            primaries_by_rrn[rrn] = (idx, tx)
+
+    # Passage 2 : fusionner les orphelins dans leur primaire, garder le reste tel quel
+    final = []
+    already_added_ids = set()
+    for idx, tx in indexed:
+        rrn = tx["identifiers"].get("rrn")
+        has_business_id = tx["identifiers"].get("stan") or tx["identifiers"].get("transaction_id")
+
+        if has_business_id:
+            if id(tx) not in already_added_ids:
+                final.append(tx)
+                already_added_ids.add(id(tx))
+            continue
+
+        primary_entry = primaries_by_rrn.get(rrn) if rrn else None
+        if primary_entry is None:
+            final.append(tx)
+            continue
+
+        primary_idx, primary = primary_entry
+        for field_num, field_val in tx["all_fields"].items():
+            primary["all_fields"].setdefault(field_num, field_val)
+        for alert in tx["alerts_found"]:
+            if alert not in primary["alerts_found"]:
+                primary["alerts_found"].append(alert)
+        if not primary["identifiers"].get("response_code") and tx["identifiers"].get("response_code"):
+            primary["identifiers"]["response_code"] = tx["identifiers"]["response_code"]
+        for func in tx["failed_functions"]:
+            if func not in primary["failed_functions"]:
+                primary["failed_functions"].append(func)
+        for func in tx["successful_functions"]:
+            if func not in primary["successful_functions"]:
+                primary["successful_functions"].append(func)
+
+        if tx["chronology"]:
+            # Respecter l'ordre chronologique reel du fichier, meme si l'orphelin
+            # a ete rencontre avant sa primaire.
+            if idx < primary_idx:
+                primary["chronology"] = (tx["chronology"] + "\n" + primary["chronology"]).strip()
+            else:
+                primary["chronology"] = (primary["chronology"] + "\n" + tx["chronology"]).strip()
+
+    return final
 
 
 def parse_trace_file_for_story(file_path: str, spec_path: str = None, doc_session_id: str = None) -> list:
@@ -178,13 +249,18 @@ def parse_trace_file_for_story(file_path: str, spec_path: str = None, doc_sessio
                         response_code_map[pending_mti_sessions[session_id]["stan"]] = pending_mti_sessions[session_id]["resp"]
                         del pending_mti_sessions[session_id]
 
-                # 2. Détection d'une nouvelle transaction (Trigger élargi du collègue)
-                if RE_START_TRANSACTION.search(line):
+                # 2. Détection d'une nouvelle transaction (marqueur MTI universel)
+                start_match = RE_START_TRANSACTION.search(line)
+                if start_match:
                     previous_tx = sessions.get(session_id)
                     if previous_tx is not None:
                         save(previous_tx)
                     tx = _new_tx()
                     _add_event(tx, "Message Réseau Entrant (Incoming Request) détecté.")
+                    mti_val = start_match.group(1)
+                    tx["mti"] = mti_val
+                    if mti_val in HEARTBEAT_MTIS:
+                        tx["is_heartbeat"] = True
                     sessions[session_id] = tx
                     continue
 
@@ -298,6 +374,8 @@ def parse_trace_file_for_story(file_path: str, spec_path: str = None, doc_sessio
 
         for tx in sessions.values():
             save(tx)
+
+        all_transactions = _merge_request_response_pairs(all_transactions)
 
     except Exception as e:
         print(f"Erreur : {str(e)}")

@@ -1,7 +1,7 @@
 {
-  "total_input_tokens": 651279,
-  "total_output_tokens": 150450,
-  "total_tokens": 801729,
+  "total_input_tokens": 778614,
+  "total_output_tokens": 242145,
+  "total_tokens": 1020759,
   "history": [
     {
       "timestamp": "2026-07-13T14:54:51.933440",
@@ -569,6 +569,90 @@
       "input_tokens": 21550,
       "output_tokens": 1199,
       "total_tokens": 22749
+    },
+    {
+      "timestamp": "2026-07-25T12:21:53.823863",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 5148,
+      "output_tokens": 6777,
+      "total_tokens": 11925
+    },
+    {
+      "timestamp": "2026-07-25T12:23:08.373750",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 7831,
+      "output_tokens": 2900,
+      "total_tokens": 10731
+    },
+    {
+      "timestamp": "2026-07-25T12:28:34.742677",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 5148,
+      "output_tokens": 6777,
+      "total_tokens": 11925
+    },
+    {
+      "timestamp": "2026-07-25T12:42:47.971458",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 14912,
+      "output_tokens": 15799,
+      "total_tokens": 30711
+    },
+    {
+      "timestamp": "2026-07-25T12:44:44.261508",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 9437,
+      "output_tokens": 7575,
+      "total_tokens": 17012
+    },
+    {
+      "timestamp": "2026-07-25T12:52:02.942875",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 9569,
+      "output_tokens": 6068,
+      "total_tokens": 15637
+    },
+    {
+      "timestamp": "2026-07-25T12:52:49.548272",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 9575,
+      "output_tokens": 7690,
+      "total_tokens": 17265
+    },
+    {
+      "timestamp": "2026-07-25T12:56:34.095284",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 9567,
+      "output_tokens": 5795,
+      "total_tokens": 15362
+    },
+    {
+      "timestamp": "2026-07-26T13:37:24.876646",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 9583,
+      "output_tokens": 7140,
+      "total_tokens": 16723
+    },
+    {
+      "timestamp": "2026-07-26T13:47:16.308683",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 8905,
+      "output_tokens": 6713,
+      "total_tokens": 15618
+    },
+    {
+      "timestamp": "2026-07-26T14:14:59.477031",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 18834,
+      "output_tokens": 7711,
+      "total_tokens": 26545
+    },
+    {
+      "timestamp": "2026-07-26T14:17:22.096599",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 18826,
+      "output_tokens": 10750,
+      "total_tokens": 29576
     }
   ]
 }
