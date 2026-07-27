@@ -1,7 +1,8 @@
 # backend/app/services/field_validator.py
 import re
+import time
 
-from app.rag.retriever import query_field_definition, search_session_chunks_keyword
+from app.rag.retriever import search_session_chunks_keyword
 
 
 FIELDS_EXCLUDED_FROM_STRICT_N = {"52"}
@@ -42,38 +43,47 @@ def _value_matches_type(value: str, type_code: str) -> bool:
 
 def validate_transaction_fields(all_fields: dict, session_id: str = None) -> list:
     """
-    Pour chaque champ extrait d'une transaction, interroge la documentation
-    (document de session en priorité si session_id fourni, puis base
-    permanente hps_specifications) et génère une alerte si le format ne
-    correspond pas. Ignore silencieusement les champs sans règle trouvée.
+    Pour chaque champ extrait d'une transaction, interroge EXCLUSIVEMENT le document de session
+    (si session_id est fourni). Si AUCUN session_id n'est fourni, retourne une liste vide sans
+    effectuer d'appel RAG ou vectoriel.
+    
+    Les recherches de champs sont dédoublonnées et mises en cache localement par numéro de champ.
     """
-    alerts = []
+    if not session_id or not session_id.strip():
+        return []
 
+    alerts = []
+    
+    # 1. Collecter et dédoublonner tous les numéros de champs à valider
+    unique_field_numbers = list(all_fields.keys())
+    definitions_cache = {}
+
+    # 2. Effectuer des recherches dédoublonnées sur le store de session
+    for idx, field_number in enumerate(unique_field_numbers):
+        session_docs = search_session_chunks_keyword(session_id, f"Field {field_number}", limit=1)
+        if session_docs:
+            definitions_cache[field_number] = {
+                "field_number": field_number,
+                "field_name": session_docs[0].metadata.get("field_name", f"Field {field_number}"),
+                "attributes": session_docs[0].metadata.get("attributes", ""),
+                "source_file": session_docs[0].metadata.get("source_file", "document de session"),
+            }
+        else:
+            definitions_cache[field_number] = None
+
+        # Pause de sécurité anti-rate-limit si beaucoup de champs uniques (>10)
+        if len(unique_field_numbers) > 10 and (idx + 1) % 10 == 0:
+            time.sleep(0.1)
+
+    # 3. Valider chaque champ à partir du cache dédoublonné
     for field_number, field_data in all_fields.items():
         value = field_data.get("value", "")
-
-        definition = None
-        if session_id:
-            session_docs = search_session_chunks_keyword(session_id, f"Field {field_number}", limit=1)
-            if session_docs:
-                definition = {
-                    "field_number": field_number,
-                    "field_name": session_docs[0].metadata.get("field_name", f"Field {field_number}"),
-                    "attributes": "",
-                    "source_file": session_docs[0].metadata.get("source_file", "document de session"),
-                }
-
-        if definition is None:
-            definition = query_field_definition(f"Field {field_number}")
-
-       
+        definition = definitions_cache.get(field_number)
 
         if definition is None:
             continue
 
         expected = _parse_expected_type(definition.get("attributes", ""))
-
-       
         if expected is None:
             continue
 

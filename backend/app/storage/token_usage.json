@@ -1,7 +1,7 @@
 {
-  "total_input_tokens": 778614,
-  "total_output_tokens": 242145,
-  "total_tokens": 1020759,
+  "total_input_tokens": 851551,
+  "total_output_tokens": 282921,
+  "total_tokens": 1134472,
   "history": [
     {
       "timestamp": "2026-07-13T14:54:51.933440",
@@ -653,6 +653,69 @@
       "input_tokens": 18826,
       "output_tokens": 10750,
       "total_tokens": 29576
+    },
+    {
+      "timestamp": "2026-07-27T09:52:53.384754",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 8525,
+      "output_tokens": 7930,
+      "total_tokens": 16455
+    },
+    {
+      "timestamp": "2026-07-27T11:13:49.806631",
+      "agent": "ValidationAgent",
+      "input_tokens": 3774,
+      "output_tokens": 2064,
+      "total_tokens": 5838
+    },
+    {
+      "timestamp": "2026-07-27T11:15:20.731240",
+      "agent": "ValidationAgent",
+      "input_tokens": 4956,
+      "output_tokens": 4817,
+      "total_tokens": 9773
+    },
+    {
+      "timestamp": "2026-07-27T11:58:04.788538",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 19720,
+      "output_tokens": 9108,
+      "total_tokens": 28828
+    },
+    {
+      "timestamp": "2026-07-27T12:13:43.402488",
+      "agent": "ValidationAgent",
+      "input_tokens": 3633,
+      "output_tokens": 2256,
+      "total_tokens": 5889
+    },
+    {
+      "timestamp": "2026-07-27T12:40:07.824626",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 734,
+      "output_tokens": 379,
+      "total_tokens": 1113
+    },
+    {
+      "timestamp": "2026-07-27T12:42:30.047056",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 7377,
+      "output_tokens": 3995,
+      "total_tokens": 11372
+    },
+    {
+      "timestamp": "2026-07-27T12:45:29.993575",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 7412,
+      "output_tokens": 5925,
+      "total_tokens": 13337
+    },
+    {
+      "timestamp": "2026-07-27T13:26:38.314812",
+      "agent": "ComplianceAuditor",
+      "input_tokens": 16806,
+      "output_tokens": 4302,
+      "total_tokens": 21108
     }
   ]
 }

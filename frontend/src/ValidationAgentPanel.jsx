@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import axios from "axios";
 import Markdown from "react-markdown";
 
-function ValidationAgentPanel({ onAnswerSuccess, isBudgetExceeded }) {
+function ValidationAgentPanel({ onAnswerSuccess }) {
   const [sessionId, setSessionId] = useState("");
   const [messages, setMessages] = useState([
     {
@@ -201,13 +201,6 @@ function ValidationAgentPanel({ onAnswerSuccess, isBudgetExceeded }) {
         )}
 
         {error && <div className="error-box chat-error">{error}</div>}
-
-        {isBudgetExceeded && (
-          <div className="warning-box" style={{ marginBottom: "12px", background: "rgba(220, 38, 38, 0.08)", color: "#b91c1c", border: "1px solid rgba(220, 38, 38, 0.2)", padding: "10px 12px", borderRadius: "10px", fontSize: "13px", display: "flex", gap: "8px", alignItems: "center" }}>
-            <span>⚠️</span>
-            <span><strong>Budget de tokens dépassé !</strong> Les requêtes continuent de fonctionner mais le quota virtuel défini est épuisé.</span>
-          </div>
-        )}
 
         {/* Formulaire de saisie avec bouton attacher */}
         <form onSubmit={handleSubmit} className="chat-input-form">

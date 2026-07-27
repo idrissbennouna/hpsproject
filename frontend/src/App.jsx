@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import axios from "axios";
 import Markdown from "react-markdown";
 import ValidationAgentPanel from "./ValidationAgentPanel";
-import TokenUsageWidget from "./components/TokenUsageWidget";
+import StructuredReport from "./components/StructuredReport";
 import "./App.css";
 
 function App() {
@@ -14,28 +14,12 @@ function App() {
   const [file, setFile] = useState(null);
   const [docFile, setDocFile] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState("");
+  const [result, setResult] = useState(null);
   const [error, setError] = useState("");
   const [activeAgent, setActiveAgent] = useState("Idle");
-
-  // States for Documentation RAG module
-  const [docQuery, setDocQuery] = useState("");
-  const [docResult, setDocResult] = useState("");
-
-  const [tokenUsage, setTokenUsage] = useState({ used: 0, budget: 1000000, remaining: 1000000, percentage: 0 });
-
-  const fetchTokenUsage = async () => {
-    try {
-      const response = await axios.get("http://127.0.0.1:8000/api/v1/usage/summary");
-      setTokenUsage(response.data);
-    } catch (err) {
-      console.error("Erreur lors de la récupération de la consommation de tokens :", err);
-    }
-  };
-
-  useEffect(() => {
-    fetchTokenUsage();
-  }, []);
+  const [progressDetail, setProgressDetail] = useState("");
+  const [pdfFilename, setPdfFilename] = useState("");
+  const [pdfFailed, setPdfFailed] = useState(false);
 
   const handleFileChange = (e) => {
     setFile(e.target.files[0]);
@@ -53,14 +37,21 @@ function App() {
     }
 
     setLoading(true);
-    setResult("");
+    setResult(null);
     setError("");
+    setPdfFailed(false);
+    setPdfFilename("");
     setActiveAgent("Supervisor (Routing...)");
+    setProgressDetail("Initialisation du traitement...");
+
+    const clientJobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
     const formData = new FormData();
     formData.append("file", file);
+    formData.append("job_id", clientJobId);
     
     if (docFile) {
+      formData.append("spec_file", docFile);
       formData.append("doc_file", docFile);
     }
 
@@ -70,28 +61,62 @@ function App() {
 
     formData.append("user_prompt", cleanPrompt);
 
-    try {
-      // Dynamic visualization simulation steps for agent states
-      setTimeout(() => setActiveAgent("LogAgent (Analyse & Diagnostic...)"), 1200);
+    // Polling d'avancement toutes les 1.2 secondes
+    const pollInterval = setInterval(async () => {
+      try {
+        const pollRes = await axios.get(`http://127.0.0.1:8000/api/v1/jobs/${clientJobId}/status`);
+        if (pollRes.data) {
+          if (pollRes.data.detail) {
+            setProgressDetail(pollRes.data.detail);
+            setActiveAgent(`LogAgent (${pollRes.data.stage})`);
+          }
+        }
+      } catch (pollErr) {
+        // Silently ignore 404 while job initializes
+      }
+    }, 1200);
 
+    try {
       const response = await axios.post("http://127.0.0.1:8000/api/v1/logs/analyze", formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
-      setResult(response.data.analysis_report || response.data);
+      clearInterval(pollInterval);
+      setResult(response.data.report || response.data.analysis_report || response.data);
+      
+      if (response.data.pdf_filename) {
+        setPdfFilename(response.data.pdf_filename);
+      }
+
+      if (response.data.pdf_generation_failed) {
+        setPdfFailed(true);
+      }
+
       setActiveAgent("FINISH");
-      fetchTokenUsage();
+      setProgressDetail("Traitement terminé.");
     } catch (err) {
+      clearInterval(pollInterval);
       setError(err.response?.data?.detail || "Une erreur est survenue lors de l'analyse agentique.");
       setActiveAgent("Error");
+      setProgressDetail("");
     } finally {
       setLoading(false);
     }
   };
 
   const handleDownloadPDF = async () => {
+    if (!pdfFilename) {
+      alert("Aucun fichier PDF n'a encore été généré pour cette analyse.");
+      return;
+    }
+
+    if (pdfFailed) {
+      alert("La génération du document PDF a échoué côté serveur. Vous pouvez consulter le rapport directement à l'écran.");
+      return;
+    }
+
     try {
-      const response = await axios.get(`http://127.0.0.1:8000/api/v1/logs/download-pdf?t=${Date.now()}`, {
+      const response = await axios.get(`http://127.0.0.1:8000/api/v1/logs/download-pdf?filename=${encodeURIComponent(pdfFilename)}&t=${Date.now()}`, {
         responseType: 'arraybuffer'
       });
 
@@ -100,7 +125,7 @@ function App() {
       
       const downloadLink = document.createElement('a');
       downloadLink.href = blobURL;
-      downloadLink.download = 'Rapport_Compliance_HPS.pdf';
+      downloadLink.download = pdfFilename;
       
       document.body.appendChild(downloadLink);
       downloadLink.click();
@@ -109,7 +134,7 @@ function App() {
       window.URL.revokeObjectURL(blobURL);
     } catch (err) {
       console.error("Erreur d'extraction du document PDF :", err);
-      alert("Erreur lors du téléchargement du PDF. Veuillez vous assurer que l'analyse a été complétée avec succès.");
+      alert("Erreur lors du téléchargement du PDF. Veuillez ré-exécuter l'analyse.");
     }
   };
 
@@ -141,7 +166,6 @@ function App() {
           >
              Agent Documentaire (RAG)
           </button>
-          <TokenUsageWidget usage={tokenUsage} />
         </nav>
 
         <div className="sidebar-footer">
@@ -172,13 +196,6 @@ function App() {
               {/* Panneau de configuration à gauche */}
               <div className="card">
                 <h3 className="card-title"> Configuration de l'Analyse</h3>
-                
-                {tokenUsage.remaining === 0 && (
-                  <div className="warning-box" style={{ marginBottom: "18px", background: "rgba(220, 38, 38, 0.08)", color: "#b91c1c", border: "1px solid rgba(220, 38, 38, 0.2)", padding: "12px", borderRadius: "10px", fontSize: "13px", display: "flex", gap: "8px", alignItems: "center" }}>
-                    <span>⚠️</span>
-                    <span><strong>Budget de tokens dépassé !</strong> Les requêtes continuent de fonctionner mais le quota virtuel défini est épuisé.</span>
-                  </div>
-                )}
                 
                 <div className="form-group">
                   <label className="label">Fichier de traces réelles (.TXT) :</label>
@@ -224,7 +241,7 @@ function App() {
                   onClick={runLogAnalysis}
                   disabled={loading}
                 >
-                  {loading ? "Calcul du Graphe Multi-Agents..." : "Exécuter l'Analyse Spécifique"}
+                  {loading ? (progressDetail || "Calcul du Graphe Multi-Agents...") : "Exécuter l'Analyse Spécifique"}
                 </button>
 
                 {error && <div className="error-box">{error}</div>}
@@ -235,21 +252,31 @@ function App() {
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(0, 0, 0, 0.05)", paddingBottom: "14px", marginBottom: "20px" }}>
                   <h3 className="card-title" style={{ margin: 0, border: "none", padding: 0 }}>Rapport d'Analyse Métier</h3>
                   {result && (
-                    <button onClick={handleDownloadPDF} className="action-btn" style={{ padding: "8px 16px", fontSize: "13px", borderRadius: "8px", marginTop: 0 }}>
-                       Télécharger PDF
+                    <button 
+                      onClick={handleDownloadPDF} 
+                      className={`action-btn ${pdfFailed ? "action-btn-disabled" : ""}`} 
+                      style={{ padding: "8px 16px", fontSize: "13px", borderRadius: "8px", marginTop: 0, background: pdfFailed ? "#ef4444" : undefined }}
+                    >
+                      {pdfFailed ? "PDF Échoué" : "Télécharger PDF"}
                     </button>
                   )}
                 </div>
                 {result ? (
-                  <div className="markdown-render">
-                    <Markdown>{result}</Markdown>
-                  </div>
+                  <StructuredReport report={result} />
                 ) : (
                   <div className="empty-state">
                     {loading ? (
-                      <div className="loader"></div>
+                      <div style={{ textAlign: "center", padding: "20px" }}>
+                        <div className="loader" style={{ margin: "0 auto 16px" }}></div>
+                        <p style={{ fontWeight: "600", color: "#1e3a8a", margin: "8px 0" }}>
+                          {progressDetail || "Analyse agentique en cours..."}
+                        </p>
+                        <span style={{ fontSize: "12px", color: "#64748b" }}>
+                          Veuillez patienter pendant l'exécution des nœuds du graphe...
+                        </span>
+                      </div>
                     ) : (
-                      <p>En attente du traitement du fichier de traces... Le rapport final s'affichera sous forme de listes à puces.</p>
+                      <p>En attente du traitement du fichier de traces... Le rapport interactif s'affichera sous forme de tableau de bord.</p>
                     )}
                   </div>
                 )}
@@ -260,7 +287,7 @@ function App() {
 
         {/* ONGLET 2 : AGENT DE DOCUMENTATION (RAG) */}
         {activeTab === "docs" && (
-          <ValidationAgentPanel onAnswerSuccess={fetchTokenUsage} isBudgetExceeded={tokenUsage.remaining === 0} />
+          <ValidationAgentPanel />
         )}
 
       </main>

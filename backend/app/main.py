@@ -5,6 +5,7 @@ import html
 import re
 import tempfile
 import hashlib
+import uuid
 from pathlib import Path
 from typing import List, Optional
 
@@ -22,11 +23,30 @@ load_dotenv()
 from app.core.agent_graph import compliance_agent_app
 from app.core.validation_agent_graph import validation_agent_app
 
+import logging
+import traceback
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("compliance_verifier")
+
 app = FastAPI(
     title="ComplianceVerifier API - HPS",
-    description="Backend d'analyse agentique de logs mon�tiques et de sp�cifications",
+    description="Backend d'analyse agentique de logs monétiques et de spécifications",
     version="1.0.0"
 )
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc: Exception):
+    tb_str = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    logger.error(f"[GLOBAL_EXCEPTION_HANDLER] Unhandled exception occurred at path: {request.url.path}\n{tb_str}")
+    print(f"🔥 [CRITICAL GLOBAL UNHANDLED EXCEPTION] at {request.url.path}:\n{tb_str}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": f"Internal Server Error: {str(exc)}",
+            "traceback": tb_str
+        }
+    )
 
 # 1. Configuration du CORS
 app.add_middleware(
@@ -64,8 +84,8 @@ def _normalize_response_text(content: any) -> str:
     return str(content)
 
 
-def _generate_reportlab_pdf(final_report_text: str, agent_assigned: str, filename: str, pdf_path: Path) -> None:
-    """G�n�re le rapport PDF s�curis� avec la charte graphique HPS."""
+def _generate_reportlab_pdf(final_report_data: any, agent_assigned: str, filename: str, pdf_path: Path) -> None:
+    """Génère le rapport PDF sécurisé avec la charte graphique HPS à partir d'un rapport structuré ou brut."""
     from reportlab.lib.pagesizes import letter
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -85,19 +105,22 @@ def _generate_reportlab_pdf(final_report_text: str, agent_assigned: str, filenam
         textColor=colors.HexColor('#0F172A'), spaceAfter=5, alignment=0
     )
     section_style = ParagraphStyle(
-        'SectionTitle', parent=styles['Heading2'], fontSize=14, leading=18,
-        textColor=colors.HexColor('#1E3A8A'), spaceBefore=18, spaceAfter=10, keepWithNext=True
+        'SectionTitle', parent=styles['Heading2'], fontSize=13, leading=17,
+        textColor=colors.HexColor('#1E3A8A'), spaceBefore=14, spaceAfter=8, keepWithNext=True
     )
     body_style = ParagraphStyle(
-        'ReportBody', parent=styles['Normal'], fontSize=10, leading=15,
-        textColor=colors.HexColor('#334155'), spaceAfter=8
+        'ReportBody', parent=styles['Normal'], fontSize=9, leading=13,
+        textColor=colors.HexColor('#334155'), spaceAfter=6
+    )
+    bold_style = ParagraphStyle(
+        'ReportBold', parent=body_style, fontName='Helvetica-Bold'
     )
     header_text_style = ParagraphStyle(
         'HeaderText', parent=styles['Normal'], fontSize=8, leading=10,
         textColor=colors.HexColor('#64748B'), alignment=2
     )
     table_header_style = ParagraphStyle(
-        'TableHeader', parent=body_style, fontSize=10, textColor=colors.white
+        'TableHeader', parent=body_style, fontSize=9, textColor=colors.white, fontName='Helvetica-Bold'
     )
 
     logo_path = STORAGE_DIR / "HPS_logo.png"
@@ -107,44 +130,111 @@ def _generate_reportlab_pdf(final_report_text: str, agent_assigned: str, filenam
         story.append(logo_img)
         story.append(Spacer(1, 10))
 
-    story.append(Paragraph("<b>HPS ComplianceAI Platform</b> � Automated Log Verification Terminal", header_text_style))
-    story.append(Spacer(1, 15))
-    story.append(Paragraph("Rapport de Validation Mon�tique", title_style))
-    story.append(Paragraph("<font color='#64748B'><i>Analyse automatis�e de conformit� des traces d'autorisation</i></font>", body_style))
-    story.append(Spacer(1, 15))
+    story.append(Paragraph("<b>HPS ComplianceAI Platform</b> — Automated Log Verification Terminal", header_text_style))
+    story.append(Spacer(1, 10))
+    story.append(Paragraph("Rapport de Validation Monétique", title_style))
+    story.append(Paragraph("<font color='#64748B'><i>Analyse automatisée de conformité des traces d'autorisation</i></font>", body_style))
+    story.append(Spacer(1, 10))
 
     meta_data = [
-        [Paragraph("<b>Param�tre d'Audit</b>", table_header_style), Paragraph("<b>Valeur / R�f�rence</b>", table_header_style)],
-        [Paragraph("Fichier Trace Source", body_style), Paragraph(filename, body_style)],
-        [Paragraph("R�f�rence Sp�cification", body_style), Paragraph("Spec_PowerCARD.xlsx", body_style)],
-        [Paragraph("Moteur d'Analyse", body_style), Paragraph(agent_assigned, body_style)],
-        [Paragraph("Statut Syst�me", body_style), Paragraph("Analyse Termin�e (200 OK)", body_style)]
+        [Paragraph("Paramètre d'Audit", table_header_style), Paragraph("Valeur / Référence", table_header_style)],
+        [Paragraph("Fichier Trace Source", body_style), Paragraph(html.escape(filename), body_style)],
+        [Paragraph("Référence Spécification", body_style), Paragraph("Spec_PowerCARD.xlsx", body_style)],
+        [Paragraph("Moteur d'Analyse", body_style), Paragraph(html.escape(agent_assigned), body_style)],
+        [Paragraph("Statut Système", body_style), Paragraph("Analyse Terminée (200 OK)", body_style)]
     ]
 
     meta_table = Table(meta_data, colWidths=[160, 340])
     meta_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (1, 0), colors.HexColor('#1E3A8A')),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+        ('TOPPADDING', (0, 0), (-1, -1), 5),
         ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
         ('LINEBELOW', (0, 0), (-1, -1), 0.5, colors.HexColor('#E2E8F0')),
     ]))
 
     story.append(meta_table)
-    story.append(Spacer(1, 15))
+    story.append(Spacer(1, 12))
 
-    story.append(Paragraph("R�sultats de l'Analyse Agentique", section_style))
+    # Support raw fallback or formatted dict
+    if isinstance(final_report_data, dict) and "summary" in final_report_data:
+        summary = final_report_data.get("summary", {})
+        story.append(Paragraph("Synthèse de l'Analyse", section_style))
+        summary_data = [
+            [Paragraph("Total Transactions", table_header_style), Paragraph("Alertes / Suspectes", table_header_style), Paragraph("Approuvées", table_header_style), Paragraph("Déclinées", table_header_style)],
+            [
+                Paragraph(str(summary.get("total_transactions", 0)), body_style),
+                Paragraph(f"<font color='#DC2626'><b>{summary.get('suspicious_count', 0)}</b></font>", body_style),
+                Paragraph(f"<font color='#16A34A'><b>{summary.get('approved_count', 0)}</b></font>", body_style),
+                Paragraph(f"<font color='#DC2626'><b>{summary.get('declined_count', 0)}</b></font>", body_style)
+            ]
+        ]
+        sum_table = Table(summary_data, colWidths=[125, 125, 125, 125])
+        sum_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E3A8A')),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+            ('TOPPADDING', (0, 0), (-1, -1), 5),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#CBD5E1')),
+        ]))
+        story.append(sum_table)
+        story.append(Spacer(1, 10))
 
-    for line in final_report_text.split("\n"):
-        if line.strip():
-            safe_line = html.escape(line)
-            if safe_line.strip().startswith("#### "):
-                safe_line = "<b>" + safe_line.replace("#### ", "", 1) + "</b>"
-            if safe_line.strip().startswith("* "):
-                safe_line = safe_line.replace("* ", "&bull; ", 1)
-            safe_line = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', safe_line)
-            safe_line = re.sub(r'`(.*?)`', r'<b>\1</b>', safe_line)
-            story.append(Paragraph(safe_line, body_style))
+        # Transactions
+        txs = final_report_data.get("transactions", [])
+        if txs:
+            story.append(Paragraph("Transactions Analysées", section_style))
+            for tx in txs:
+                tx_id = html.escape(str(tx.get("transaction_id", "")))
+                status = "Approuvée" if tx.get("approval_status") == "approved" else "Déclinée"
+                status_color = "#16A34A" if tx.get("approval_status") == "approved" else "#DC2626"
+                susp_label = " [⚠️ ALERTE DETECTEE]" if tx.get("is_suspicious") else ""
+                
+                header_p = Paragraph(f"<b>{tx_id}</b> - Statut: <font color='{status_color}'><b>{status}</b></font>{susp_label}", body_style)
+                story.append(header_p)
+                
+                details = f"PAN: {html.escape(str(tx.get('pan_masked', '')))} | STAN: {html.escape(str(tx.get('stan', '')))} | RRN: {html.escape(str(tx.get('rrn', '')))} | Code Rep: {html.escape(str(tx.get('response_code', '')))}"
+                story.append(Paragraph(f"<font color='#64748B'>{details}</font>", body_style))
+                
+                alerts = tx.get("alerts", [])
+                if alerts:
+                    story.append(Paragraph(f"<b>Alertes:</b> <font color='#DC2626'>{html.escape(', '.join(alerts))}</font>", body_style))
+                
+                chronology = tx.get("chronology", [])
+                if chronology:
+                    for step in chronology:
+                        story.append(Paragraph(f"&bull; {html.escape(str(step))}", body_style))
+                story.append(Spacer(1, 6))
+
+        # Field Analysis
+        fa = final_report_data.get("field_analysis", [])
+        if fa:
+            story.append(Paragraph("Analyse de Conformité des Champs", section_style))
+            for field in fa:
+                f_num = html.escape(str(field.get("field_number", "")))
+                f_name = html.escape(str(field.get("field_name", "")))
+                note = html.escape(str(field.get("compliance_note", "")))
+                story.append(Paragraph(f"<b>{f_num} - {f_name}</b>", bold_style))
+                if note:
+                    story.append(Paragraph(f"<b>Note:</b> {note}", body_style))
+                rules = field.get("spec_rules", [])
+                if rules:
+                    story.append(Paragraph(f"<b>Règles Spécification:</b> {html.escape('; '.join(rules))}", body_style))
+                story.append(Spacer(1, 6))
+
+    else:
+        raw_text = final_report_data.get("raw_fallback", "") if isinstance(final_report_data, dict) else str(final_report_data)
+        story.append(Paragraph("Résultats de l'Analyse Agentique", section_style))
+        for line in raw_text.split("\n"):
+            if line.strip():
+                safe_line = html.escape(line)
+                if safe_line.strip().startswith("#### "):
+                    safe_line = "<b>" + safe_line.replace("#### ", "", 1) + "</b>"
+                if safe_line.strip().startswith("* "):
+                    safe_line = safe_line.replace("* ", "&bull; ", 1)
+                safe_line = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', safe_line)
+                safe_line = re.sub(r'`(.*?)`', r'<b>\1</b>', safe_line)
+                story.append(Paragraph(safe_line, body_style))
 
     doc.build(story)
 
@@ -254,7 +344,7 @@ def _process_and_index_pdf(file_bytes: bytes, filename: str, session_id: str) ->
             inter_batch_delay=EMBEDDING_BATCH_DELAY_SECONDS,
             session_id=session_id
         )
-        print(f"[INDEX_SUCCESS] Session '{session_id}': {indexed_count}/{len(missing_chunks)} missing chunks index�s avec succ�s.")
+        print(f"[INDEX_SUCCESS] Session '{session_id}': {indexed_count}/{len(missing_chunks)} missing chunks indexed successfully.")
     except QuotaExhaustedError as qe:
         return {
             "success": False,
@@ -289,24 +379,33 @@ def _process_and_index_pdf(file_bytes: bytes, filename: str, session_id: str) ->
 
 @app.get("/")
 def read_root():
-    return {"status": "online", "message": "Serveur ComplianceVerifier op�rationnel"}
+    return {"status": "online", "message": "Serveur ComplianceVerifier oprationnel"}
 
 
 @app.post("/api/v1/logs/analyze")
 async def analyze_logs(
     user_prompt: str = Form(...),
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    spec_file: Optional[UploadFile] = File(None, alias="doc_file"),
+    doc_file: Optional[UploadFile] = File(None),
+    job_id: Optional[str] = Form(None)
 ):
     """
-    Re�oit un fichier de traces (.TXT, .LOG, .TRC, .DAT), analyse son contenu
+    Reçoit un fichier de traces (.TXT, .LOG, .TRC, .DAT), analyse son contenu
     via le graphe d'agents et produit un rapport PDF.
+    Accepte facultativement un fichier de spécification (PDF) pour enrichir l'analyse.
     """
     safe_filename = Path(file.filename or "upload").name
     filename_lower = safe_filename.lower()
     is_trace_file = any(filename_lower.endswith(ext) for ext in ('.txt', '.log', '.trc', '.dat')) or '.trc' in filename_lower
 
     if not is_trace_file:
-        raise HTTPException(status_code=400, detail="Seuls les fichiers de traces (.TXT, .LOG, .TRC, .DAT) sont accept�s.")
+        raise HTTPException(status_code=400, detail="Seuls les fichiers de traces (.TXT, .LOG, .TRC, .DAT) sont acceptés.")
+
+    active_job_id = job_id or f"job_{uuid.uuid4().hex[:12]}"
+    from app.services.job_tracker import create_job, update_job
+    create_job(active_job_id, job_type="log_analysis")
+    update_job(active_job_id, stage="parsing_trace", detail="Réception et préparation du fichier de traces...", progress_pct=5)
 
     target_file_path = STORAGE_DIR / safe_filename
 
@@ -314,32 +413,62 @@ async def analyze_logs(
         with target_file_path.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"�chec de l'�criture du fichier : {str(e)}")
+        update_job(active_job_id, stage="error", detail=f"Échec d'écriture : {str(e)}", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Échec de l'écriture du fichier : {str(e)}")
+
+    effective_spec = spec_file or doc_file
+    doc_session_id = active_job_id
+    if effective_spec and effective_spec.filename:
+        try:
+            update_job(active_job_id, stage="embedding_pdf", detail="Extraction et indexation du document de spécification...", progress_pct=15)
+            spec_bytes = await effective_spec.read()
+            if spec_bytes:
+                safe_spec_name = Path(effective_spec.filename).name
+                pdf_res = await run_in_threadpool(_process_and_index_pdf, spec_bytes, safe_spec_name, doc_session_id)
+                if not pdf_res.get("success"):
+                    print(f"[WARN] Indexation du document de spec échouée : {pdf_res.get('message')}")
+                    logger.warning(f"Indexation document spec échouée pour {active_job_id}: {pdf_res.get('message')}")
+        except Exception as spec_err:
+            print(f"[WARN] Erreur lors de la lecture/indexation du document de spec : {str(spec_err)}")
+            logger.warning(f"Erreur lecture doc spec pour {active_job_id}: {str(spec_err)}")
 
     try:
         graph_inputs = {
             "user_prompt": user_prompt,
             "file_name": safe_filename,
+            "doc_session_id": doc_session_id,
             "current_agent": "",
             "rag_context": "",
             "log_data_json": "",
             "final_response": ""
         }
 
+        update_job(active_job_id, stage="generating_report", detail="Exécution du graphe multi-agents (LogStory & Compliance)...", progress_pct=50)
         execution_result = await run_in_threadpool(compliance_agent_app.invoke, graph_inputs)
 
-        raw_report = execution_result.get("final_response", "Aucun rapport g�n�r�.")
-        final_report_text = _normalize_response_text(raw_report)
+        raw_report = execution_result.get("final_response", {"raw_fallback": "Aucun rapport généré."})
         agent_assigned = execution_result.get("current_agent", "ComplianceAuditorAgent")
 
-        pdf_filename = f"Rapport_{Path(safe_filename).stem}.pdf"
+        # PART 1: Unique PDF filename per request to prevent stale file caching
+        unique_suffix = uuid.uuid4().hex[:8]
+        pdf_filename = f"Rapport_{Path(safe_filename).stem}_{unique_suffix}.pdf"
         pdf_path = STORAGE_DIR / pdf_filename
 
+        update_job(active_job_id, stage="building_pdf", detail="Génération du rapport PDF...", progress_pct=85)
+
+        pdf_generation_failed = False
+        pdf_error_detail = None
+
         try:
-            await run_in_threadpool(_generate_reportlab_pdf, final_report_text, agent_assigned, safe_filename, pdf_path)
+            await run_in_threadpool(_generate_reportlab_pdf, raw_report, agent_assigned, safe_filename, pdf_path)
+            print(f"✅ PDF principal généré avec succès : {pdf_filename}")
         except Exception as pdf_err:
-            print(f"Erreur lors de la g�n�ration du PDF principal : {str(pdf_err)}")
+            tb_err = traceback.format_exc()
+            print(f"❌ Erreur lors de la génération du PDF principal ({pdf_filename}) : {pdf_err}\n{tb_err}")
+            logger.error(f"Échec génération PDF principal pour {pdf_filename}: {pdf_err}\n{tb_err}")
+            
             try:
+                print(f"⚠️ Tentative de génération du PDF fallback Mode Restauré pour {pdf_filename}...")
                 from reportlab.lib.pagesizes import letter
                 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
                 from reportlab.lib.styles import getSampleStyleSheet
@@ -347,41 +476,69 @@ async def analyze_logs(
                 doc_fail = SimpleDocTemplate(str(pdf_path), pagesize=letter)
                 styles_fail = getSampleStyleSheet()
                 story_fail = [
-                    Paragraph("<b>Rapport d'Audit (Mode Restaur�)</b>", styles_fail['Heading1']),
+                    Paragraph("<b>Rapport d'Audit (Mode Restauré)</b>", styles_fail['Heading1']),
                     Spacer(1, 15)
                 ]
-                for raw_line in final_report_text.split("\n"):
+                fallback_str = raw_report.get("raw_fallback", str(raw_report)) if isinstance(raw_report, dict) else str(raw_report)
+                for raw_line in fallback_str.split("\n"):
                     if raw_line.strip():
                         story_fail.append(Paragraph(html.escape(raw_line), styles_fail['Normal']))
                 doc_fail.build(story_fail)
+                print(f"✅ PDF fallback Mode Restauré généré avec succès : {pdf_filename}")
             except Exception as final_err:
-                print(f"�chec critique du fallback PDF : {str(final_err)}")
+                pdf_generation_failed = True
+                pdf_error_detail = str(final_err)
+                tb_final = traceback.format_exc()
+                print(f"🔥 Échec critique du fallback PDF ({pdf_filename}) : {final_err}\n{tb_final}")
+                logger.critical(f"Échec critique du fallback PDF ({pdf_filename}): {final_err}\n{tb_final}")
 
-        return {
+        response_data = {
             "success": True,
+            "job_id": active_job_id,
             "agent_assigned": agent_assigned,
             "log_chronology": execution_result.get("log_data_json"),
-            "analysis_report": final_report_text,
-            "pdf_filename": pdf_filename
+            "report": raw_report,
+            "analysis_report": raw_report,
+            "pdf_filename": pdf_filename,
+            "pdf_generation_failed": pdf_generation_failed,
+            "pdf_error_detail": pdf_error_detail
         }
 
+        update_job(active_job_id, stage="done", detail="Analyse et génération terminées avec succès !", progress_pct=100, result=response_data)
+
+        return response_data
+
     except Exception as e:
+        update_job(active_job_id, stage="error", detail=f"Erreur agentique : {str(e)}", error=str(e))
         from app.services.llm_util import GeminiOverloadedError, GeminiQuotaExhaustedError
         real_exc = e.__cause__ or e
         if isinstance(real_exc, GeminiOverloadedError):
-            raise HTTPException(status_code=503, detail="Le service Gemini est temporairement surcharg�. Veuillez r�essayer dans quelques instants.")
+            raise HTTPException(status_code=503, detail="Le service Gemini est temporairement surchargé. Veuillez réessayer dans quelques instants.")
         elif isinstance(real_exc, GeminiQuotaExhaustedError):
-            raise HTTPException(status_code=429, detail="Le quota de l'API Gemini a �t� atteint. Veuillez r�essayer plus tard.")
+            raise HTTPException(status_code=429, detail="Le quota de l'API Gemini a été atteint. Veuillez réessayer plus tard.")
         raise HTTPException(status_code=500, detail=f"Erreur lors de l'analyse agentique : {str(e)}")
 
 
+@app.get("/api/v1/jobs/{job_id}/status")
+def get_job_status(job_id: str):
+    """Retourne le statut d'avancement d'un traitement en cours."""
+    from app.services.job_tracker import get_job
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job non trouvé.")
+    return job
+
+
 @app.get("/api/v1/logs/download-pdf")
-async def download_pdf(filename: Optional[str] = "Rapport_Compliance_HPS.pdf"):
-    """Permet le t�l�chargement du rapport PDF g�n�r�."""
-    safe_filename = Path(filename or "Rapport_Compliance_HPS.pdf").name
+async def download_pdf(filename: Optional[str] = None):
+    """Permet le téléchargement du rapport PDF généré."""
+    if not filename:
+        raise HTTPException(status_code=400, detail="Le nom du fichier PDF doit être spécifié via le paramètre 'filename'.")
+    
+    safe_filename = Path(filename).name
     pdf_path = STORAGE_DIR / safe_filename
 
-    if pdf_path.exists() and pdf_path.stat().st_size > 1000:
+    if pdf_path.exists() and pdf_path.stat().st_size > 100:
         return FileResponse(
             path=str(pdf_path),
             filename=safe_filename,

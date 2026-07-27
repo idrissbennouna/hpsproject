@@ -111,6 +111,11 @@ def parser_story_node(state: AgentState) -> Dict[str, Any]:
 
     transactions_to_report = ordered_transactions[:MAX_TOTAL_TRANSACTIONS]
 
+    job_id = state.get("doc_session_id") or state.get("file_name")
+    if job_id:
+        from app.services.job_tracker import update_job
+        update_job(job_id, stage="parsing_trace", detail="Analyse et parsing du fichier de traces...", progress_pct=10)
+
     log_data_json = json.dumps(transactions_to_report, indent=2, ensure_ascii=False)
 
     return {"log_data_json": log_data_json, "current_agent": "ParserAgent"}
@@ -119,16 +124,22 @@ def parser_story_node(state: AgentState) -> Dict[str, Any]:
 # --- NOEUD 2 : RAG SPECIFICATION RETRIEVER ---
 def rag_spec_retriever_node(state: AgentState) -> Dict[str, Any]:
     """
-    Étape 2 : extrait les fonctions en échec détectées par le parser et va
-    chercher leur VRAIE spécification dans la base vectorielle pgvector
-    via query_specs(), ou fallback local si non disponible.
+    Étape 2 : si un document de spécification PDF a été joint pour cette analyse (doc_session_id),
+    interroge la base vectorielle de session ("hps_session_files") pour extraire les règles applicables.
+    Si aucun document n'a été fourni, ne fait AUCUN appel RAG et renvoie un message explicite.
     """
+    doc_session_id = state.get("doc_session_id")
+    
+    if not doc_session_id or not str(doc_session_id).strip():
+        return {
+            "rag_context": "Aucun document de spécification fourni pour cette analyse.",
+            "current_agent": "RagRetrieverAgent"
+        }
+
     try:
         log_data = json.loads(state.get("log_data_json", "[]"))
     except Exception:
         log_data = []
-
-    monitored_functions = get_monitored_function_names()
 
     detected_errors = []
     if isinstance(log_data, list):
@@ -138,22 +149,32 @@ def rag_spec_retriever_node(state: AgentState) -> Dict[str, Any]:
                     if func not in detected_errors:
                         detected_errors.append(func)
 
-    if detected_errors:
-        query_str = " ".join(detected_errors)
-        rag_extracted_rules = query_specs(query_str, k=2)
-        if not rag_extracted_rules.strip():
-            rag_extracted_rules = get_spec_context_for_functions(detected_errors)
-        if not rag_extracted_rules.strip():
-            rag_extracted_rules = (
-                f"ALERTE(S) DÉTECTÉE(S) sur la ou les fonction(s) suivante(s) : "
-                f"{', '.join(detected_errors)}. Aucune spécification correspondante n'a été "
-                "trouvée ni dans la base vectorielle pgvector ni dans le fallback Excel "
-                "Spec_PowerCARD.xlsx — une vérification manuelle de ces fonctions est requise."
-            )
+    query_str = " ".join(detected_errors) if detected_errors else state.get("user_prompt", "")
+    search_q = query_str if query_str.strip() else "spécification"
+
+    session_spec_context = ""
+    try:
+        from app.rag.retriever import get_session_vectorstore
+        session_db = get_session_vectorstore()
+        session_docs = session_db.similarity_search(search_q, k=4, filter={"session_id": doc_session_id})
+        if session_docs:
+            doc_snippets = []
+            for d in session_docs:
+                src = d.metadata.get("source", "Document de session")
+                pg = d.metadata.get("page")
+                pg_str = f" (Page {pg})" if pg else ""
+                doc_snippets.append(f"[{src}{pg_str}]\n{d.page_content.strip()}")
+            session_spec_context = "\n\n".join(doc_snippets)
+    except Exception as e:
+        print(f"[RAG_SESSION_RETRIEVAL_ERR] Impossible d'interroger les documents de session '{doc_session_id}' : {e}")
+
+    if session_spec_context.strip():
+        rag_extracted_rules = (
+            f"=== DOCUMENT DE SPÉCIFICATION FOURNI POUR CETTE ANALYSE ===\n{session_spec_context.strip()}"
+        )
     else:
         rag_extracted_rules = (
-            "Aucune anomalie détectée sur les fonctions métier surveillées "
-            f"({', '.join(monitored_functions)}). Aucune spécification à mobiliser."
+            f"Aucun extrait de spécification correspondant n'a été trouvé dans le document joint pour cette session."
         )
 
     return {"rag_context": rag_extracted_rules, "current_agent": "RagRetrieverAgent"}
@@ -163,38 +184,66 @@ def rag_spec_retriever_node(state: AgentState) -> Dict[str, Any]:
 def compliance_auditor_node(state: AgentState) -> Dict[str, Any]:
     """
     Étape 3 : combine la LogStory filtrée et le contexte de spec pour générer
-    le rapport d'audit final structuré.
+    le rapport d'audit final sous forme d'un objet JSON structuré.
     """
+    job_id = state.get("doc_session_id") or state.get("file_name")
+    if job_id:
+        from app.services.job_tracker import update_job
+        update_job(job_id, stage="generating_report", detail="Génération du rapport d'audit par l'Agent Compliance (LLM)...", progress_pct=60)
+
     auditor_prompt = ChatPromptTemplate.from_messages([
         ("system", (
             "Tu es un Agent Expert en Audit et Conformité Monétique pour les testeurs d'HPS.\n"
-            "Ton rôle est de générer un rapport d'analyse basé sur la liste des transactions et les "
-            "spécifications techniques (RAG Context) fournies, EN SUIVANT STRICTEMENT LA DEMANDE DU TESTEUR "
-            "ci-dessous (variable {user_prompt}) : n'inclus que ce qui est demandé, ni plus, ni moins.\n\n"
-            "Tu disposes des éléments suivants, à utiliser SI ET SEULEMENT SI la demande du testeur le justifie :\n"
-            "- La Story chronologique (les jalons) de chaque autorisation, incluant les fonctions exécutées avec succès (OK) et les fonctions en échec (NOK ou retour négatif).\n"
-            "- Les détails concernant les champs [FLD 037] (RRN - Retrieval Reference Number) et [FLD 039] (Response Code) pour indiquer si la transaction a été approuvée ou non.\n"
-            "- Les ALERTES rencontrées (statuts != OK ou NOK -1).\n"
-            "- La justification de chaque alerte ou comportement en faisant le lien avec le RAG Context (qui peut provenir des spécifications ou de documents PDF de documentation technique uploadés).\n"
-            "- Des pistes de diagnostic (tables SQL ou configurations de routage à vérifier).\n\n"
+            "Ton rôle est de générer un rapport d'analyse sous forme d'un OBJET JSON STRUCTURÉ UNIQUEMENT "
+            "(aucun texte de présentation, aucun bloc markdown prose en dehors du JSON) basé sur la liste des transactions "
+            "et les spécifications techniques (RAG Context) fournies, EN SUIVANT STRICTEMENT LA DEMANDE DU TESTEUR "
+            "ci-dessous (variable {user_prompt}).\n\n"
+            "Format du JSON de réponse (respecte scrupuleusement la structure des clés et les types) :\n"
+            "{{\n"
+            '  "summary": {{\n'
+            '    "total_transactions": <int>,\n'
+            '    "suspicious_count": <int>,\n'
+            '    "approved_count": <int>,\n'
+            '    "declined_count": <int>\n'
+            "  }},\n"
+            '  "transactions": [\n'
+            "    {{\n"
+            '      "transaction_id": <string, ex: "TXN-1">,\n'
+            '      "is_suspicious": <boolean>,\n'
+            '      "pan_masked": <string, masquer tous sauf les 4 derniers chiffres ex: "•••• •••• •••• 1991">,\n'
+            '      "stan": <string>,\n'
+            '      "rrn": <string>,\n'
+            '      "response_code": <string>,\n'
+            '      "response_code_label": <string, ex: "Approuvée" ou "Déclinée">,\n'
+            '      "approval_status": <"approved" | "declined">,\n'
+            '      "alerts": [<string>, ...],\n'
+            '      "chronology": [<string>, ...]\n'
+            "    }}\n"
+            "  ],\n"
+            '  "field_analysis": [\n'
+            "    {{\n"
+            '      "field_number": <string, ex: "FLD 039">,\n'
+            '      "field_name": <string, ex: "Response Code">,\n'
+            '      "spec_description": <string>,\n'
+            '      "spec_rules": [<string>, ...],\n'
+            '      "observed_examples": [\n'
+            "        {{\n"
+            '          "transaction_ids": [<string>, ...],\n'
+            '          "value": <string>,\n'
+            '          "declared_length": <string>,\n'
+            '          "note": <string>\n'
+            "        }}\n"
+            "      ],\n"
+            '      "compliance_note": <string>\n'
+            "    }}\n"
+            "  ]\n"
+            "}}\n\n"
             "Règles :\n"
-            "- IMPORTANT : le JSON des transactions fourni contient TOUTES les transactions de la trace "
-            "(pas un échantillon) — traite-les TOUTES sans exception, même s'il y en a beaucoup et même "
-            "si cela produit un rapport long. N'en omets, résume ou ne saute aucune.\n"
-            "- Pour chaque transaction qui a un champ `alerts_found` non vide, mets-la clairement en avant "
-            "(par exemple avec un marqueur '⚠️ SUSPECTE' ou équivalent) et place-la avant les transactions "
-            "sans alerte dans le rapport.\n"
-            "- Analyse et expose aussi bien les fonctions en succès (OK) que les échecs, pour donner une vue complète.\n"
-            "- Identifie clairement les valeurs des champs [FLD 037] et [FLD 039] et le statut d'approbation qui en découle.\n"
-            "- Réponds également aux questions ou analyses demandées sur les documents de spécification ou guides techniques (fichiers PDF de documentation, etc.) s'ils sont fournis dans le contexte.\n"
-            "- Si le testeur demande uniquement la story, ne restitue QUE la story (mais pour TOUTES les "
-            "transactions fournies), sans mentionner les alertes ni ajouter de justification ou de pistes "
-            "de diagnostic, même si des alertes existent dans les données.\n"
-            "- Si le testeur demande explicitement les alertes, la justification ou les pistes de diagnostic, "
-            "inclus les sections correspondantes.\n"
-            "- Si la demande est ambiguë ou générique (ex: \"analyse ce fichier\"), tu peux alors produire le "
-            "rapport complet (story + alertes + justification + pistes) par défaut.\n"
-            "- Ne réponds jamais avec plus de sections que ce que la demande justifie."
+            "- IMPORTANT : le JSON des transactions fourni contient TOUTES les transactions de la trace. Traite-les toutes.\n"
+            "- Pour chaque transaction avec un champ `alerts_found` non vide, passe `is_suspicious` à true et renseigne les `alerts` avec de courts libellés d'alerte.\n"
+            "- Si le testeur demande UNIQUEMENT la story (sans alertes ni justification), retourne le JSON avec `alerts` et `field_analysis` sous forme de listes vides `[]` et `suspicious_count` à 0.\n"
+            "- Si la demande est d'analyser le fichier ou demande les alertes/justifications/pistes, remplis l'intégralité des sections `summary`, `transactions` et `field_analysis`.\n"
+            "- Réponds STRICTEMENT et UNIQUEMENT avec l'objet JSON valide sans texte avant ou après."
         )),
         ("user", (
             "Prompt de l'utilisateur : {user_prompt}\n\n"
@@ -216,7 +265,6 @@ def compliance_auditor_node(state: AgentState) -> Dict[str, Any]:
 
     content = response.content
     if isinstance(content, list):
-        print(f"⚠️ [WARNING] response.content is a list instead of string! Normalizing list: {content}")
         parts = []
         for block in content:
             if isinstance(block, str):
@@ -233,7 +281,24 @@ def compliance_auditor_node(state: AgentState) -> Dict[str, Any]:
     else:
         normalized_response = str(content)
 
-    return {"final_response": normalized_response, "current_agent": "ComplianceAuditorAgent"}
+    # Nettoyage et parsing JSON côté serveur
+    cleaned_text = normalized_response.strip()
+    if cleaned_text.startswith("```"):
+        cleaned_text = re.sub(r"^```(?:json)?\s*", "", cleaned_text, flags=re.IGNORECASE)
+        cleaned_text = re.sub(r"\s*```$", "", cleaned_text)
+        cleaned_text = cleaned_text.strip()
+
+    try:
+        parsed_json = json.loads(cleaned_text)
+        if isinstance(parsed_json, dict) and ("summary" in parsed_json or "transactions" in parsed_json):
+            final_data = parsed_json
+        else:
+            final_data = {"raw_fallback": normalized_response}
+    except Exception as parse_err:
+        print(f"⚠️ Failed to parse LLM response as JSON: {parse_err}")
+        final_data = {"raw_fallback": normalized_response}
+
+    return {"final_response": final_data, "current_agent": "ComplianceAuditorAgent"}
 
 
 # 2. Construction et compilation du Workflow LangGraph

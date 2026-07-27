@@ -274,6 +274,7 @@ def batch_add_documents(
     Ingère les documents par lots (batches) dynamiques basés sur le nombre de documents et le nombre de tokens
     estimés, avec retry/backoff ou parsing de retryDelay sur 429, suivi de quota quotidien SQLite et logs détaillés.
     """
+    import random
     import time
     from tenacity import Retrying, stop_after_attempt, wait_exponential, retry_if_exception
     from app.core.config import (
@@ -316,7 +317,18 @@ def batch_add_documents(
     
     indexed_count = 0
     try:
+        from app.services.job_tracker import update_job
         for b_idx, (batch, b_tokens) in enumerate(batches, 1):
+            if session_id:
+                # Calcul progressif du pourcentage pour la phase embedding (ex: de 10% à 50%)
+                pct = int(10 + (b_idx / total_batches) * 40)
+                update_job(
+                    session_id, 
+                    stage="embedding_pdf", 
+                    detail=f"Indexation du document de spécification (lot {b_idx}/{total_batches})...",
+                    progress_pct=pct
+                )
+
             # Proactive quota check before sending API request
             _check_and_increment_daily_embedding_usage(limit=1000)
 
@@ -360,7 +372,8 @@ def batch_add_documents(
             print(f"[PROGRESS] Embedded {indexed_count}/{total_chunks} chunks dans pgvector.")
             
             if b_idx < total_batches and inter_batch_delay > 0:
-                time.sleep(inter_batch_delay)
+                jitter_delay = inter_batch_delay + random.uniform(0, 5)
+                time.sleep(jitter_delay)
 
         return total_chunks
 
