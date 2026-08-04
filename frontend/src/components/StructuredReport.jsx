@@ -17,7 +17,10 @@ function FunctionDocModal({ functionName, sessionId, onClose }) {
     axios
       .get(url)
       .then((res) => setDocData(res.data))
-      .catch(() => setError("Impossible de charger la documentation."))
+      .catch((err) => {
+        const detail = err.response?.data?.detail || "Impossible de charger la documentation pour cette fonction.";
+        setError(detail);
+      })
       .finally(() => setLoading(false));
   }, [functionName, sessionId]);
 
@@ -51,19 +54,21 @@ function FunctionDocModal({ functionName, sessionId, onClose }) {
         </div>
         <div className="func-modal-body">
           {loading && <p className="func-modal-loading">🔄 Recherche dans la documentation…</p>}
-          {error && <p className="func-modal-error">{error}</p>}
+          {error && <p className="func-modal-error">⚠️ {error}</p>}
 
           {/* Cas : fonction introuvable */}
-          {!loading && docData && !docData.found && (
+          {!loading && !error && docData && !docData.found && (
             <div className="func-modal-not-found">
               <span className="func-modal-not-found-icon">📪</span>
               <p>Documentation non disponible pour <code>{functionName}</code>.</p>
-              <p className="func-modal-not-found-hint">Cette fonction n'est pas répertoriée dans les sources disponibles.</p>
+              <p className="func-modal-not-found-hint">
+                {docData.message || "Cette fonction n'est pas répertoriée dans Spec_PowerCARD.xlsx ni dans le document de session."}
+              </p>
             </div>
           )}
 
           {/* Cas : 4 sections LLM structurées */}
-          {!loading && docData && docData.found && docData.llm_structured && (
+          {!loading && !error && docData && docData.found && docData.llm_structured && (
             <div className="func-modal-llm-sections">
               {LLM_SECTIONS.map(({ key, icon, label }) => (
                 <div key={key} className="func-llm-card">
@@ -80,15 +85,19 @@ function FunctionDocModal({ functionName, sessionId, onClose }) {
             </div>
           )}
 
-          {/* Fallback gracieux : ancien format sans llm_structured */}
-          {!loading && docData && docData.found && !docData.llm_structured && (
+          {/* Fallback gracieux : format documentation brute */}
+          {!loading && !error && docData && docData.found && !docData.llm_structured && (
             <div className="func-modal-docs">
-              {(docData.documentation || []).map((section, idx) => (
-                <div key={idx} className="func-doc-section">
-                  <div className="func-doc-source-badge">{section.source}</div>
-                  <pre className="func-doc-content">{section.content}</pre>
-                </div>
-              ))}
+              {(docData.documentation && docData.documentation.length > 0) ? (
+                docData.documentation.map((section, idx) => (
+                  <div key={idx} className="func-doc-section">
+                    <div className="func-doc-source-badge">{section.source}</div>
+                    <pre className="func-doc-content">{section.content}</pre>
+                  </div>
+                ))
+              ) : (
+                <p className="func-modal-empty">Aucun extrait de documentation brute disponible.</p>
+              )}
             </div>
           )}
         </div>
@@ -143,6 +152,7 @@ function ChronologyStep({ step, failedFunctions, sessionId }) {
 // ─── Carte de transaction ────────────────────────────────────────────────────
 function TransactionCard({ transaction, index, sessionId }) {
   const [expanded, setExpanded] = useState(false);
+  const [selectedDocFunc, setSelectedDocFunc] = useState(null);
 
   const isApproved =
     transaction.approval_status === "approved" ||
@@ -230,14 +240,23 @@ function TransactionCard({ transaction, index, sessionId }) {
         )}
       </div>
 
-      {/* ── Fonctions en échec (section dédiée) ── */}
+      {/* ── Fonctions en échec (section dédiée avec bouton ? pour documentation) ── */}
       {failedFunctions.length > 0 && (
         <div className="tx-failed-functions-row">
           <span className="tx-section-label">Fonctions en échec :</span>
           <div className="failed-funcs-chips">
             {failedFunctions.map((fn, fIdx) => (
-              <span key={fIdx} className="failed-func-chip">
-                ✕ {fn}
+              <span key={fIdx} className="failed-func-chip" style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                <span>✕ {fn}</span>
+                <button
+                  className="chrono-help-btn"
+                  style={{ width: "18px", height: "18px", fontSize: "10px", padding: 0 }}
+                  title={`Documentation de ${fn}`}
+                  onClick={() => setSelectedDocFunc(fn)}
+                  aria-label={`Voir la documentation de ${fn}`}
+                >
+                  ?
+                </button>
               </span>
             ))}
           </div>
@@ -281,6 +300,15 @@ function TransactionCard({ transaction, index, sessionId }) {
             ))}
           </ol>
         </div>
+      )}
+
+      {/* Modale de documentation pour la puce de fonction sélectionnée */}
+      {selectedDocFunc && (
+        <FunctionDocModal
+          functionName={selectedDocFunc}
+          sessionId={sessionId}
+          onClose={() => setSelectedDocFunc(null)}
+        />
       )}
     </div>
   );

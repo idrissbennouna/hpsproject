@@ -1,7 +1,7 @@
 {
-  "total_input_tokens": 1796710,
-  "total_output_tokens": 475363,
-  "total_tokens": 2272073,
+  "total_input_tokens": 1805706,
+  "total_output_tokens": 484443,
+  "total_tokens": 2290149,
   "history": [
     {
       "timestamp": "2026-07-13T14:54:51.933440",
@@ -1193,6 +1193,14 @@
       "input_tokens": 36101,
       "output_tokens": 1928,
       "total_tokens": 38029
+    },
+    {
+      "timestamp": "2026-08-04T15:43:36.164619",
+      "agent": "ComplianceAuditor",
+      "model": "gemini-3.6-flash",
+      "input_tokens": 8996,
+      "output_tokens": 9080,
+      "total_tokens": 18076
     }
   ]
 }

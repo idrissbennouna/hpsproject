@@ -1131,9 +1131,16 @@ async def get_function_doc(function_name: str, session_id: Optional[str] = None)
         "function_name": safe_name,
         "found": True,
         "llm_structured": llm_structured,
+        "documentation": [
+            {
+                "source": part.split("\n")[0].strip("[]") if part.startswith("[") else "Source Spécification",
+                "content": "\n".join(part.split("\n")[1:]).strip() if part.startswith("[") else part
+            }
+            for part in raw_content_parts
+        ],
         "raw_sources_count": len(raw_content_parts),
     }
 
-    # Mettre en cache
+    # Mettre en cache uniquement si on a trouvé des infos
     _FUNC_DOC_CACHE[cache_key] = result
     return result

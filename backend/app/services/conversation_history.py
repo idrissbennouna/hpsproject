@@ -1,4 +1,4 @@
-﻿# backend/app/services/conversation_history.py
+# backend/app/services/conversation_history.py
 import json
 import sqlite3
 import threading
@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 _DB_PATH = Path(__file__).resolve().parent.parent / "storage" / "conversations.db"
+_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 _LOCK = threading.Lock()
 
 def _get_conn():
@@ -24,11 +25,21 @@ def _init_db():
                     id            TEXT PRIMARY KEY,
                     agent_type    TEXT NOT NULL DEFAULT 'logs',
                     title         TEXT NOT NULL DEFAULT 'Conversation sans titre',
+                    created_at    TEXT NOT NULL,
+                    updated_at    TEXT NOT NULL,
                     last_activity TEXT NOT NULL,
                     messages_json TEXT NOT NULL DEFAULT '[]',
                     result_json   TEXT
                 )
             """)
+            # Migration douce si les colonnes created_at / updated_at manquent sur une base existante
+            cursor = conn.execute("PRAGMA table_info(conversations)")
+            cols = [row["name"] for row in cursor.fetchall()]
+            if "created_at" not in cols:
+                conn.execute("ALTER TABLE conversations ADD COLUMN created_at TEXT NOT NULL DEFAULT ''")
+            if "updated_at" not in cols:
+                conn.execute("ALTER TABLE conversations ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_conv_agent_activity
                 ON conversations (agent_type, last_activity DESC)
@@ -45,14 +56,23 @@ def _now_iso():
 def create_conversation(agent_type, title, messages=None, result=None, conv_id=None):
     conv_id = conv_id or str(uuid.uuid4())
     now = _now_iso()
-    messages_json = json.dumps(messages or [], ensure_ascii=False)
-    result_json = json.dumps(result, ensure_ascii=False) if result is not None else None
+    messages_json = json.dumps(messages or [], default=str, ensure_ascii=False)
+    result_json = json.dumps(result, default=str, ensure_ascii=False) if result is not None else None
     with _LOCK:
         conn = _get_conn()
         try:
             conn.execute(
-                "INSERT INTO conversations (id, agent_type, title, last_activity, messages_json, result_json) VALUES (?, ?, ?, ?, ?, ?)",
-                (conv_id, agent_type, title, now, messages_json, result_json),
+                """
+                INSERT INTO conversations (id, agent_type, title, created_at, updated_at, last_activity, messages_json, result_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    title=excluded.title,
+                    updated_at=excluded.updated_at,
+                    last_activity=excluded.last_activity,
+                    messages_json=excluded.messages_json,
+                    result_json=excluded.result_json
+                """,
+                (conv_id, agent_type, title, now, now, now, messages_json, result_json),
             )
             conn.commit()
         finally:
@@ -64,7 +84,7 @@ def get_conversations(agent_type, limit=10):
         conn = _get_conn()
         try:
             rows = conn.execute(
-                "SELECT id, agent_type, title, last_activity FROM conversations WHERE agent_type = ? ORDER BY last_activity DESC LIMIT ?",
+                "SELECT id, agent_type, title, created_at, updated_at, last_activity FROM conversations WHERE agent_type = ? ORDER BY last_activity DESC LIMIT ?",
                 (agent_type, limit),
             ).fetchall()
             return [dict(r) for r in rows]
@@ -95,11 +115,11 @@ def update_conversation(conv_id, title=None, messages=None, result=None):
             if existing is None:
                 return None
             new_title = title if title is not None else existing["title"]
-            new_messages_json = json.dumps(messages, ensure_ascii=False) if messages is not None else existing["messages_json"]
-            new_result_json = json.dumps(result, ensure_ascii=False) if result is not None else existing["result_json"]
+            new_messages_json = json.dumps(messages, default=str, ensure_ascii=False) if messages is not None else existing["messages_json"]
+            new_result_json = json.dumps(result, default=str, ensure_ascii=False) if result is not None else existing["result_json"]
             conn.execute(
-                "UPDATE conversations SET title = ?, last_activity = ?, messages_json = ?, result_json = ? WHERE id = ?",
-                (new_title, now, new_messages_json, new_result_json, conv_id),
+                "UPDATE conversations SET title = ?, updated_at = ?, last_activity = ?, messages_json = ?, result_json = ? WHERE id = ?",
+                (new_title, now, now, new_messages_json, new_result_json, conv_id),
             )
             conn.commit()
         finally:
@@ -115,3 +135,4 @@ def delete_conversation(conv_id):
             return cursor.rowcount > 0
         finally:
             conn.close()
+

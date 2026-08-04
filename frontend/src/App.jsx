@@ -259,7 +259,6 @@ function App() {
 
     const clientJobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
     setCurrentJobId(clientJobId);
-    setActiveConvId(clientJobId);
 
     const formData = new FormData();
     formData.append("file", file);
@@ -307,6 +306,7 @@ function App() {
 
       setActiveAgent("FINISH");
       setProgressDetail("Traitement terminé.");
+      setActiveConvId(response.data.job_id || clientJobId);
     } catch (err) {
       clearInterval(pollInterval);
       setError(
