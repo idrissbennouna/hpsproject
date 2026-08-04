@@ -71,7 +71,7 @@ class TestValidationFeatures(unittest.TestCase):
             "chat_history": []
         }
         retriever_node(state_specific)
-        mock_db.similarity_search.assert_called_with("Quelle est la valeur du champ 039 ?", k=4, filter={"session_id": "sess_1"})
+        mock_db.similarity_search.assert_called_with("Quelle est la valeur du champ 039 ?", k=8, filter={"session_id": "sess_1"})
 
         # 2. Question globale / résumé -> k=16
         state_broad = {
@@ -106,7 +106,7 @@ class TestValidationFeatures(unittest.TestCase):
         }
         res_a = retriever_node(state_a)
 
-        mock_db.similarity_search.assert_called_with("Quelles sont les spécifications ?", k=4, filter={"session_id": "session_A"})
+        mock_db.similarity_search.assert_called_with("Quelles sont les spécifications ?", k=8, filter={"session_id": "session_A"})
         self.assertIn("Session A content", res_a["rag_context"])
 
     @patch("app.rag.retriever.delete_session_documents")
@@ -149,6 +149,54 @@ class TestValidationFeatures(unittest.TestCase):
         mock_keyword_search.assert_called()
         self.assertIn("Field 37 - Retrieval Reference Number definition", res["rag_context"])
 
+
+
+    def test_trace_filtering_limits_prompt_size(self):
+        """Vérifie que le filtrage dynamique des traces de session plafonne la taille du contexte à 15 000 caractères."""
+        from app.core.validation_agent_graph import _filter_session_trace_content
+        
+        # Générer 50 transactions massives
+        tx_blocks = []
+        for i in range(1, 51):
+            tx_blocks.append(
+                f"=== Transaction {i} ===\n"
+                f"STAN: {100000+i} | PAN: 450000******1234 | ID: TX_{i}\n"
+                f"RRN [FLD 037]: {900000+i} | Code Réponse [FLD 039]: {'00' if i != 5 else '05'} (Approuvée)\n"
+                f"Chronologie complète des événements:\n" +
+                "\n".join([f"- Line {l} for transaction {i}: " + ("DATA " * 50) for l in range(100)]) +
+                f"\nAlertes: {'Alerte sur transaction 5' if i == 5 else 'Aucune'}"
+            )
+        raw_massive_trace = "\n\n".join(tx_blocks)
+        self.assertGreater(len(raw_massive_trace), 300000)
+
+        # Filtrage sans mot-clé spécifique -> doit sélectionner les alertes et synthétiser le reste sous 15000 chars
+        filtered = _filter_session_trace_content(raw_massive_trace, "Quelle est la situation globale ?")
+        self.assertLessEqual(len(filtered), 20000)
+        self.assertIn("TRANSACTIONS AVEC ALERTES / ERREURS DÉTECTÉES", filtered)
+
+        # Filtrage avec STAN spécifique -> doit extraire la transaction correspondante
+        filtered_stan = _filter_session_trace_content(raw_massive_trace, "Qu'en est-il du STAN 100010 ?")
+        self.assertLessEqual(len(filtered_stan), 20000)
+        self.assertIn("100010", filtered_stan)
+
+    @patch("sqlalchemy.create_engine")
+    def test_chunking_version_mismatch_forces_reembed(self, mock_create_engine):
+        """Vérifie que find_chunks_by_file_hash retourne version_mismatch=True quand les chunks ont une version obsolète."""
+        from app.rag.retriever import find_chunks_by_file_hash
+        
+        mock_conn = MagicMock()
+        mock_create_engine.return_value.connect.return_value.__enter__.return_value = mock_conn
+
+        # Connexion Simulant 10 chunks totaux en base pour ce hash, mais 0 correspondant à la version v2 actuelle
+        mock_conn.execute.side_effect = [
+            MagicMock(scalar=lambda: 10), # total_hash_chunks
+            MagicMock(scalar=lambda: 0)   # matching_version_chunks
+        ]
+
+        res = find_chunks_by_file_hash("dummy_hash_v1_chunks")
+        self.assertFalse(res["found"])
+        self.assertTrue(res["version_mismatch"])
+        self.assertEqual(res["chunk_count"], 0)
 
 
 if __name__ == "__main__":

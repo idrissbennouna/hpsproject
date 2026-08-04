@@ -2,14 +2,23 @@ import React, { useState, useRef, useEffect } from "react";
 import axios from "axios";
 import Markdown from "react-markdown";
 
-function ValidationAgentPanel({ onAnswerSuccess }) {
+function ValidationAgentPanel({ onAnswerSuccess, initialConversation, onConversationSaved }) {
   const [sessionId, setSessionId] = useState("");
-  const [messages, setMessages] = useState([
-    {
-      role: "assistant",
-      content: "Bonjour ! Je suis votre **Agent Expert en Spécifications PowerCARD**. Posez-moi vos questions sur le dictionnaire de données, les codes retours ou le comportement fonctionnel de l'application. Vous pouvez également m'envoyer un fichier PDF, TXT ou XLSX éphémère pour poser des questions directement dessus.",
-    },
-  ]);
+  const [convId, setConvId] = useState(initialConversation?.id || null);
+
+  // Initialise les messages : depuis une conversation historique ou état initial
+  const [messages, setMessages] = useState(() => {
+    if (initialConversation && Array.isArray(initialConversation.messages) && initialConversation.messages.length > 0) {
+      return initialConversation.messages;
+    }
+    return [
+      {
+        role: "assistant",
+        content: "Bonjour ! Je suis votre **Agent Expert en Spécifications PowerCARD**. Posez-moi vos questions sur le dictionnaire de données, les codes retours ou le comportement fonctionnel de l'application. Vous pouvez également m'envoyer un fichier PDF, TXT ou XLSX éphémère pour poser des questions directement dessus.",
+      },
+    ];
+  });
+
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -25,6 +34,22 @@ function ValidationAgentPanel({ onAnswerSuccess }) {
       : Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
     setSessionId(uuid);
   }, []);
+
+  // Si une conversation initiale est fournie (depuis l'historique), charger son état complet
+  useEffect(() => {
+    if (initialConversation) {
+      setConvId(initialConversation.id);
+      // Fetch full conversation with messages
+      axios.get(`http://127.0.0.1:8000/api/v1/conversations/${initialConversation.id}`)
+        .then((res) => {
+          const conv = res.data;
+          if (conv && Array.isArray(conv.messages) && conv.messages.length > 0) {
+            setMessages(conv.messages);
+          }
+        })
+        .catch(() => {/* silently fail */});
+    }
+  }, [initialConversation]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -56,9 +81,17 @@ function ValidationAgentPanel({ onAnswerSuccess }) {
         question: cleanInput,
         chat_history: apiHistory.slice(0, -1),
         session_id: sessionId,
+        conv_id: convId,  // Part A: envoie conv_id pour mise à jour si existant
       });
 
       const data = response.data;
+
+      // Part A: récupère l'id de conversation retourné par le backend
+      if (data.conv_id) {
+        setConvId(data.conv_id);
+        if (onConversationSaved) onConversationSaved(data.conv_id);
+      }
+
       setMessages((prev) => [
         ...prev,
         {
@@ -128,7 +161,7 @@ function ValidationAgentPanel({ onAnswerSuccess }) {
     <div className="validation-panel animate-slide-in">
       <div className="header-row">
         <div>
-          <h2 className="section-title">Validation & Spécifications HPS</h2>
+          <h2 className="section-title">Validation &amp; Spécifications HPS</h2>
           <p className="section-desc">
             Interrogez l'Agent AI sur les spécifications ou joignez un document éphémère de validation (PDF, TXT, XLSX).
           </p>

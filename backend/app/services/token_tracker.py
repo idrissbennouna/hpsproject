@@ -21,6 +21,10 @@ def extract_token_usage(llm_response) -> dict:
         return usage
         
     try:
+        # Extraire le modèle utilisé s'il a été attaché aux métadonnées
+        if hasattr(llm_response, "response_metadata") and isinstance(llm_response.response_metadata, dict):
+            usage["model"] = llm_response.response_metadata.get("model_used") or llm_response.response_metadata.get("model_name")
+
         # 1. Structure moderne de LangChain (usage_metadata)
         if hasattr(llm_response, "usage_metadata") and llm_response.usage_metadata:
             meta = llm_response.usage_metadata
@@ -46,7 +50,7 @@ def extract_token_usage(llm_response) -> dict:
         
     return usage
 
-def record_usage(agent_name: str, usage: dict):
+def record_usage(agent_name: str, usage: dict, model_name: str = None):
     """
     Persiste la consommation de tokens dans un fichier JSON local (token_usage.json).
     Cette écriture est thread-safe grâce au verrou FILE_LOCK.
@@ -77,6 +81,7 @@ def record_usage(agent_name: str, usage: dict):
             input_t = usage.get("input_tokens", 0)
             output_t = usage.get("output_tokens", 0)
             total_t = usage.get("total_tokens", 0)
+            effective_model = model_name or usage.get("model") or "gemini-3.5-flash"
             
             data["total_input_tokens"] = data.get("total_input_tokens", 0) + input_t
             data["total_output_tokens"] = data.get("total_output_tokens", 0) + output_t
@@ -86,6 +91,7 @@ def record_usage(agent_name: str, usage: dict):
             history_entry = {
                 "timestamp": datetime.now().isoformat(),
                 "agent": agent_name,
+                "model": effective_model,
                 "input_tokens": input_t,
                 "output_tokens": output_t,
                 "total_tokens": total_t

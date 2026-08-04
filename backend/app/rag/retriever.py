@@ -80,37 +80,101 @@ def ensure_session_id_index():
         print(f"[WARN] Remarque indexation pgvector (optionnelle si table non creee) : {e}")
 
 def find_chunks_by_file_hash(file_hash: str) -> dict:
-    """Recherche les chunks existants pour un file_hash donné et retourne des métadonnées (count, total_pages et existing_chunk_indices)."""
+    """
+    Recherche les chunks existants pour un file_hash SHA-256 donné et la version de chunking actuelle (CHUNKING_VERSION).
+    
+    COMPORTEMENT DE CACHE ET DÉDUPLICATION PAR HASH :
+    - Vérifie si le fichier PDF a déjà été vectorisé avec la version de chunking actuelle.
+    - Si les chunks en base possèdent une version obsolète ou absente, ils sont ignorés (found=False)
+      pour forcer un ré-embedding complet propre.
+    """
+    from app.core.config import CHUNKING_VERSION
     try:
         from sqlalchemy import create_engine, text
         engine = create_engine(CONNECTION_STRING)
         with engine.connect() as conn:
-            chunk_count = conn.execute(
+            # 1. Vérification de l'existence de chunks pour ce file_hash (toutes versions confondues)
+            total_hash_chunks = conn.execute(
                 text("SELECT COUNT(*) FROM langchain_pg_embedding WHERE cmetadata->>'file_hash' = :file_hash"),
                 {"file_hash": file_hash}
-            ).scalar()
+            ).scalar() or 0
 
-            if chunk_count and chunk_count > 0:
+            # 2. Compte des chunks correspondant exactement à CHUNKING_VERSION
+            matching_version_chunks = conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM langchain_pg_embedding "
+                    "WHERE cmetadata->>'file_hash' = :file_hash "
+                    "AND cmetadata->>'chunking_version' = :version"
+                ),
+                {"file_hash": file_hash, "version": CHUNKING_VERSION}
+            ).scalar() or 0
+
+            # Si des anciens chunks existent mais avec une version obsolète/absente
+            if total_hash_chunks > 0 and matching_version_chunks == 0:
+                print(f"[CHUNKING_VERSION_MISMATCH] Anciens chunks détectés avec une version de chunking obsolète — ré-embedding complet forcé.")
+                return {
+                    "found": False,
+                    "chunk_count": 0,
+                    "total_pages": 0,
+                    "existing_chunk_indices": set(),
+                    "version_mismatch": True
+                }
+
+            if matching_version_chunks and matching_version_chunks > 0:
                 distinct_pages = conn.execute(
-                    text("SELECT COUNT(DISTINCT (cmetadata->>'page')::int) FROM langchain_pg_embedding WHERE cmetadata->>'file_hash' = :file_hash AND cmetadata->>'page' IS NOT NULL"),
-                    {"file_hash": file_hash}
+                    text(
+                        "SELECT COUNT(DISTINCT (cmetadata->>'page')::text) FROM langchain_pg_embedding "
+                        "WHERE cmetadata->>'file_hash' = :file_hash "
+                        "AND cmetadata->>'chunking_version' = :version "
+                        "AND cmetadata->>'page' IS NOT NULL"
+                    ),
+                    {"file_hash": file_hash, "version": CHUNKING_VERSION}
                 ).scalar() or 0
 
                 rows = conn.execute(
-                    text("SELECT DISTINCT (cmetadata->>'chunk_index')::int FROM langchain_pg_embedding WHERE cmetadata->>'file_hash' = :file_hash AND cmetadata->>'chunk_index' IS NOT NULL"),
-                    {"file_hash": file_hash}
+                    text(
+                        "SELECT DISTINCT (cmetadata->>'chunk_index')::int FROM langchain_pg_embedding "
+                        "WHERE cmetadata->>'file_hash' = :file_hash "
+                        "AND cmetadata->>'chunking_version' = :version "
+                        "AND cmetadata->>'chunk_index' IS NOT NULL"
+                    ),
+                    {"file_hash": file_hash, "version": CHUNKING_VERSION}
                 ).fetchall()
                 existing_indices = set(r[0] for r in rows if r[0] is not None)
 
                 return {
                     "found": True,
-                    "chunk_count": chunk_count,
+                    "chunk_count": matching_version_chunks,
                     "total_pages": distinct_pages,
-                    "existing_chunk_indices": existing_indices
+                    "existing_chunk_indices": existing_indices,
+                    "version_mismatch": False
                 }
     except Exception as e:
         print(f"[WARN] find_chunks_by_file_hash failed: {e}")
-    return {"found": False, "chunk_count": 0, "total_pages": 0, "existing_chunk_indices": set()}
+    return {"found": False, "chunk_count": 0, "total_pages": 0, "existing_chunk_indices": set(), "version_mismatch": False}
+
+def update_session_id_for_file_hash(file_hash: str, session_id: str):
+    """
+    Met à jour les métadonnées session_id et last_accessed dans cmetadata pour tous les chunks correspondant à file_hash.
+    """
+    try:
+        from datetime import datetime, timezone
+        from sqlalchemy import create_engine, text
+        now_iso = datetime.now(timezone.utc).isoformat()
+        engine = create_engine(CONNECTION_STRING)
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    "UPDATE langchain_pg_embedding "
+                    "SET cmetadata = (cmetadata::jsonb || jsonb_build_object('session_id', :session_id, 'last_accessed', :now_iso)) "
+                    "WHERE cmetadata->>'file_hash' = :file_hash"
+                ),
+                {"session_id": session_id, "now_iso": now_iso, "file_hash": file_hash}
+            )
+            conn.commit()
+            print(f"[REUSE_HASH] Metadonnée session_id mise à jour vers '{session_id}' pour file_hash '{file_hash[:10]}...'.")
+    except Exception as e:
+        print(f"[WARN] Impossible de mettre à jour session_id pour file_hash {file_hash[:10]}: {e}")
 
 def count_session_chunks(session_id: str) -> dict:
     """Diagnostic helper: compte les chunks présents pour une session_id donnée et liste les session_ids en base."""
@@ -136,6 +200,53 @@ def count_session_chunks(session_id: str) -> dict:
     except Exception as e:
         print(f"[WARN] Diagnostic count_session_chunks failed: {e}")
         return {"session_id": session_id, "chunk_count": 0, "all_active_session_ids": [], "error": str(e)}
+
+
+def list_spec_library() -> list:
+    """
+    Retourne la liste des documents de spécification déjà indexés en base vectorielle,
+    dédoublonnés par file_hash. Pour chaque document distinct, retourne :
+    - file_hash (SHA-256)
+    - source (nom du fichier d'origine)
+    - chunk_count (nombre de chunks)
+    - created_at (date d'indexation)
+    Triés par last_accessed DESC (les plus récemment utilisés en premier).
+    """
+    try:
+        from sqlalchemy import create_engine, text
+        engine = create_engine(CONNECTION_STRING)
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT "
+                    "  cmetadata->>'file_hash' AS file_hash, "
+                    "  cmetadata->>'source' AS source, "
+                    "  COUNT(*) AS chunk_count, "
+                    "  MIN(cmetadata->>'created_at') AS created_at, "
+                    "  MAX(cmetadata->>'last_accessed') AS last_accessed "
+                    "FROM langchain_pg_embedding "
+                    "WHERE cmetadata->>'file_hash' IS NOT NULL "
+                    "  AND cmetadata->>'source' IS NOT NULL "
+                    "GROUP BY cmetadata->>'file_hash', cmetadata->>'source' "
+                    "ORDER BY last_accessed DESC NULLS LAST "
+                    "LIMIT 50"
+                )
+            ).fetchall()
+
+            result = []
+            for row in rows:
+                result.append({
+                    "file_hash": row[0],
+                    "filename": row[1],
+                    "chunk_count": int(row[2]),
+                    "created_at": row[3],
+                    "last_accessed": row[4],
+                })
+            return result
+    except Exception as e:
+        print(f"[WARN] list_spec_library failed: {e}")
+        return []
+
 
 def search_session_chunks_keyword(session_id: str, keyword: str, file_hashes: list = None, limit: int = 5) -> list:
     """Effectue une recherche textuelle directe ILIKE dans langchain_pg_embedding filtrée par file_hashes ou fallback session_id."""
@@ -183,6 +294,27 @@ def search_session_chunks_keyword(session_id: str, keyword: str, file_hashes: li
             return documents
     except Exception as e:
         print(f"[WARN] Hybrid keyword search failed for session '{session_id}', keyword '{keyword}': {e}")
+        return []
+
+def retrieve_session_chunks(session_id: str, query: str, file_hashes: list = None, k: int = 5, max_k: int = 10) -> list:
+    """
+    Recherche sémantique par similarité dans la base vectorielle PGVector pour les documents d'une session.
+    Le paramètre k est strictement plafonné à max_k (par défaut 10 chunks maximum, ~3000-5000 tokens)
+    afin de préserver le quota d'entrée Gemini (250 000 TPM limit).
+    """
+    bounded_k = min(k, max_k)
+    try:
+        session_db = get_session_vectorstore()
+        filter_dict = {}
+        if file_hashes and len(file_hashes) == 1:
+            filter_dict = {"file_hash": file_hashes[0]}
+        elif session_id:
+            filter_dict = {"session_id": session_id}
+
+        docs = session_db.similarity_search(query, k=bounded_k, filter=filter_dict)
+        return docs
+    except Exception as e:
+        print(f"[WARN] retrieve_session_chunks failed for session '{session_id}': {e}")
         return []
 
 class QuotaExhaustedError(Exception):
@@ -313,7 +445,9 @@ def batch_add_documents(
         batches.append((current_batch, current_batch_tokens))
 
     total_batches = len(batches)
+    estimated_time_minutes = (total_batches * inter_batch_delay) / 60.0
     print(f"[BATCH] Début de l'ingestion de {total_chunks} chunks découpés en {total_batches} lots dynamiques (max {batch_size} chunks et max {EMBEDDING_MAX_TOKENS_PER_BATCH} tokens/lot, délai inter-lot: {inter_batch_delay}s)...")
+    print(f"[INGESTION SUMMARY] Nombre total de chunks: {total_chunks} | Nombre total de lots prévus: {total_batches} | Temps total estimé: {estimated_time_minutes:.2f} minute(s)")
     
     indexed_count = 0
     try:
@@ -464,7 +598,7 @@ def _local_excel_fallback(query: str, k: int = 4) -> str:
     return ""
 
 
-def query_specs(query: str, k: int = 4) -> str:
+def query_specs(query: str, k: int = 8) -> str:
     """
     Exécute une recherche de similarité sur les spécifications PowerCARD.
     Formate le résultat en un unique bloc textuel propre indiquant la source de chaque segment.
@@ -501,6 +635,255 @@ def query_specs(query: str, k: int = 4) -> str:
     except Exception as e:
         print(f"⚠️ Recherche vectorielle échouée (Erreur: {type(e).__name__} - {str(e)}). Utilisation du fallback Excel local...")
         return _local_excel_fallback(query, k=k)
+
+
+def extract_code_tokens(query: str) -> list:
+    """
+    Extrait les codes à 2 lettres majuscules (ex: EC, ED, CA) d'une question.
+    Détecte prioritairement les expressions comme :
+      - 'code de réponse ED', 'réponse ED', 'la réponse est ED'
+      - 'commande EC', 'la commande EC', 'code commande EC'
+      - 'commande dont la réponse est ED', 'commande source de ED'
+      - Code seul entouré de guillemets/apostrophes : 'ED', "EC"
+    Puis fallback sur les tokens 2 lettres hors stopwords.
+    """
+    if not query:
+        return []
+
+    found = []
+    # Patterns prioritaires : formulations explicites fr/en
+    patterns = [
+        # 'code de réponse XX', 'code reponse XX', 'réponse XX', 'reponse XX'
+        r'(?:code\s+de\s+réponse|code\s+de\s+reponse|code\s+reponse|code\s+réponse)\s*(?:est|=|:\s*)?\s*[\'"]?([A-Za-z]{2})[\'"]?',
+        # 'réponse (est|:) XX' ou 'réponse XX' standalone
+        r'\bréponse\s+(?:est\s+|:\s*)?[\'"]?([A-Za-z]{2})[\'"]?(?:\b|\d)',
+        r'\breponse\s+(?:est\s+|:\s*)?[\'"]?([A-Za-z]{2})[\'"]?(?:\b|\d)',
+        # 'commande dont la réponse est XX'
+        r'commande\s+(?:dont\s+la\s+réponse|dont\s+le\s+code\s+de\s+réponse|source\s+(?:du|de)\s+(?:code|la réponse))\s+(?:est\s+)?[\'"]?([A-Za-z]{2})[\'"]?',
+        # 'commande XX', 'la commande XX', 'code commande XX', 'command XX'
+        r'(?:code\s+)?(?:commande|command|cmd)\s*(?:est|=|:\s*)?\s*[\'"]?([A-Za-z]{2})[\'"]?',
+        # 'code XX' générique
+        r'\bcode\s*[:\s]?[\'"]([A-Za-z]{2})[\'"]',
+        # Code en guillemets seul : 'ED' ou "EC"
+        r'[\'"]([A-Za-z]{2})[\'"]',
+        # XX est le code / XX est la commande / XX est la réponse
+        r'\b([A-Za-z]{2})\s*(?:est\s+le\s+code|est\s+la\s+commande|est\s+le\s+code\s+de\s+réponse|est\s+la\s+réponse)\b',
+    ]
+    for pat in patterns:
+        for m in re.findall(pat, query, re.IGNORECASE):
+            code = m.upper()
+            if code not in found:
+                found.append(code)
+
+    stopwords = {
+        "ET", "OU", "DE", "LE", "LA", "DU", "AU", "UN", "EN", "SI", "NO", 
+        "CE", "CI", "SA", "SES", "SON", "EST", "PAS", "QUE", "QUI", "PAR", 
+        "SUR", "DES", "NE", "ON", "IL", "SE", "MA", "TA", "TE", "ME"
+    }
+
+    all_2letter = re.findall(r"\b[A-Z]{2}\b", query.upper())
+    for token in all_2letter:
+        if token not in stopwords and token not in found:
+            found.append(token)
+
+    return found
+
+
+def _load_command_response_map() -> dict:
+    """Charge le mapping command_code -> response_code depuis backend/app/data/command_response_map.json."""
+    map_path = Path(__file__).resolve().parents[1] / "data" / "command_response_map.json"
+    if map_path.exists():
+        try:
+            import json
+            with open(map_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[WARN] Impossible de charger command_response_map.json: {e}")
+    return {"EC": "ED"}
+
+
+def query_command_code(command_code: str, session_id: str = None, file_hash: str = None, limit: int = 8) -> list:
+    """
+    Effectue une recherche EXACTE et BIDIRECTIONNELLE sur les métadonnées command_code / response_code,
+    en résolvant command_code <-> response_code via le mapping JSON.
+    Retourne les objets langchain Document correspondants.
+
+    Logique de résolution :
+      - Si command_code est une CLÉ du mapping (ex: EC) : target_cmd=EC, target_resp=ED
+      - Si command_code est une VALEUR du mapping (ex: ED) : target_cmd=EC, target_resp=ED
+      - Sinon : cherche directement dans les deux colonnes command_code ET response_code
+    La requête SQL filtre simultanément sur command_code ET response_code sans présupposer
+    lequel des deux correspond.
+    """
+    if not command_code:
+        return []
+
+    cmd_clean = command_code.strip().upper()
+    cmd_map = _load_command_response_map()
+    inv_map = {v: k for k, v in cmd_map.items()}
+
+    # Résolution bidirectionnelle
+    if cmd_clean in cmd_map:
+        target_cmd_code = cmd_clean
+        target_resp_code = cmd_map[cmd_clean]
+        print(f"[QUERY_COMMAND_CODE] '{cmd_clean}' détecté comme command_code → réponse attendue: '{target_resp_code}'")
+    elif cmd_clean in inv_map:
+        target_cmd_code = inv_map[cmd_clean]
+        target_resp_code = cmd_clean
+        print(f"[QUERY_COMMAND_CODE] '{cmd_clean}' détecté comme response_code → commande source: '{target_cmd_code}'")
+    else:
+        target_cmd_code = cmd_clean
+        target_resp_code = cmd_clean
+        print(f"[QUERY_COMMAND_CODE] '{cmd_clean}' non trouvé dans le mapping — recherche directe sur command_code ET response_code")
+
+    try:
+        from sqlalchemy import create_engine, text
+        from langchain_core.documents import Document
+        import json
+
+        engine = create_engine(CONNECTION_STRING)
+        with engine.connect() as conn:
+            sql_query = text(
+                "SELECT document, cmetadata FROM langchain_pg_embedding "
+                "WHERE (cmetadata->>'response_code' = :resp_code OR cmetadata->>'command_code' = :cmd_code "
+                "       OR cmetadata->>'response_code' = :cmd_code OR cmetadata->>'command_code' = :resp_code "
+                "       OR cmetadata->>'contains_error_table' = 'true' "
+                "       OR document ILIKE :pat_table "
+                "       OR (document ILIKE :pat_cmd AND document ILIKE :pat_resp) "
+                "       OR document ILIKE :pat_single) "
+                "AND (:session_id IS NULL OR cmetadata->>'session_id' = :session_id OR cmetadata->>'file_hash' = :file_hash) "
+                "ORDER BY "
+                "  CASE WHEN cmetadata->>'response_code' = :resp_code OR cmetadata->>'command_code' = :cmd_code "
+                "            OR cmetadata->>'response_code' = :cmd_code OR cmetadata->>'command_code' = :resp_code THEN 1 "
+                "       WHEN cmetadata->>'contains_error_table' = 'true' OR document ILIKE '%PVK parity error%' THEN 2 "
+                "       ELSE 3 END "
+                "LIMIT :limit"
+            )
+            params = {
+                "resp_code": target_resp_code,
+                "cmd_code": target_cmd_code,
+                "pat_table": "%PVK parity error%",
+                "pat_cmd": f"%{target_cmd_code}%",
+                "pat_resp": f"%{target_resp_code}%",
+                "pat_single": f"%{cmd_clean}%",
+                "session_id": session_id,
+                "file_hash": file_hash,
+                "limit": limit
+            }
+
+            results = conn.execute(sql_query, params).fetchall()
+
+            if not results:
+                fallback_query = text(
+                    "SELECT document, cmetadata FROM langchain_pg_embedding "
+                    "WHERE (document ILIKE :pat1 OR document ILIKE :pat2) "
+                    "AND (:session_id IS NULL OR cmetadata->>'session_id' = :session_id OR cmetadata->>'file_hash' = :file_hash) "
+                    "LIMIT :limit"
+                )
+                fb_params = {
+                    "pat1": f"%{target_cmd_code}%",
+                    "pat2": f"%{target_resp_code}%",
+                    "session_id": session_id,
+                    "file_hash": file_hash,
+                    "limit": limit
+                }
+                results = conn.execute(fallback_query, fb_params).fetchall()
+
+            documents = []
+            for row in results:
+                doc_text, meta = row[0], row[1]
+                if isinstance(meta, str):
+                    try:
+                        meta = json.loads(meta)
+                    except Exception:
+                        meta = {}
+                meta = meta or {}
+
+                # Injection de la correspondance dans les métadonnées et en-tête du document
+                meta["command_code"] = target_cmd_code
+                meta["response_code"] = target_resp_code
+
+                annotated_text = doc_text
+                if target_cmd_code != target_resp_code and f"Code Commande: {target_cmd_code}" not in doc_text:
+                    annotation = (
+                        f"[CORRESPONDANCE RAG : Code Réponse '{target_resp_code}' <-> Code Commande Source '{target_cmd_code}']\n"
+                        f"[Le code de réponse '{target_resp_code}' est généré par la commande '{target_cmd_code}']\n"
+                    )
+                    annotated_text = annotation + doc_text
+
+                documents.append(Document(page_content=annotated_text, metadata=meta))
+            print(f"[QUERY_COMMAND_CODE] {len(documents)} document(s) trouvé(s) pour cmd='{target_cmd_code}' / resp='{target_resp_code}'")
+            return documents
+    except Exception as e:
+        print(f"[WARN] query_command_code failed for command '{command_code}': {e}")
+        return []
+
+
+def purge_old_session_chunks(days: int = 7) -> int:
+    """
+    Purge les chunks de session dont la métadonnée last_accessed ou created_at est plus ancienne que `days` jours.
+    """
+    try:
+        from datetime import datetime, timedelta, timezone
+        from sqlalchemy import create_engine, text
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        engine = create_engine(CONNECTION_STRING)
+        with engine.connect() as conn:
+            res = conn.execute(
+                text(
+                    "DELETE FROM langchain_pg_embedding "
+                    "WHERE (cmetadata->>'last_accessed' IS NOT NULL AND cmetadata->>'last_accessed' < :cutoff) "
+                    "   OR (cmetadata->>'created_at' IS NOT NULL AND cmetadata->>'created_at' < :cutoff)"
+                ),
+                {"cutoff": cutoff}
+            )
+            conn.commit()
+            deleted_count = res.rowcount
+            print(f"[PURGE] {deleted_count} chunks de plus de {days} jours supprimés de pgvector.")
+            return deleted_count
+    except Exception as e:
+        print(f"[WARN] purge_old_session_chunks failed: {e}")
+        return 0
+
+
+def purge_chunks_by_file_hash(file_hash: str) -> int:
+    """Purge tous les chunks correspondant à un file_hash donné."""
+    try:
+        from sqlalchemy import create_engine, text
+        engine = create_engine(CONNECTION_STRING)
+        with engine.connect() as conn:
+            res = conn.execute(
+                text("DELETE FROM langchain_pg_embedding WHERE cmetadata->>'file_hash' = :file_hash"),
+                {"file_hash": file_hash}
+            )
+            conn.commit()
+            deleted = res.rowcount
+            print(f"[PURGE] {deleted} chunks supprimés pour file_hash '{file_hash[:10]}...'.")
+            return deleted
+    except Exception as e:
+        print(f"[WARN] purge_chunks_by_file_hash failed: {e}")
+        return 0
+
+
+def purge_chunks_by_session_id(session_id: str) -> int:
+    """Purge tous les chunks correspondant à un session_id donné."""
+    try:
+        from sqlalchemy import create_engine, text
+        engine = create_engine(CONNECTION_STRING)
+        with engine.connect() as conn:
+            res = conn.execute(
+                text("DELETE FROM langchain_pg_embedding WHERE cmetadata->>'session_id' = :session_id"),
+                {"session_id": session_id}
+            )
+            conn.commit()
+            deleted = res.rowcount
+            print(f"[PURGE] {deleted} chunks supprimés pour session_id '{session_id}'.")
+            return deleted
+    except Exception as e:
+        print(f"[WARN] purge_chunks_by_session_id failed: {e}")
+        return 0
+
+
 FIELD_NUMBER_RE = re.compile(
     r"(?:field|champ|fld)\s*0*(\d+)",
     re.IGNORECASE,

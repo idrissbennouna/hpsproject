@@ -91,12 +91,37 @@ def validate_transaction_fields(all_fields: dict, session_id: str = None) -> lis
             continue  # champ connu pour être hexadécimal malgré son type déclaré "N"
 
         if not _value_matches_type(value, expected["type_code"]):
+            type_label = {
+                "N": "N (numérique)",
+                "A": "A (alphabétique)",
+                "AN": "AN (alphanumérique)",
+                "ANS": "ANS (alphanumérique + spéciaux)",
+                "NS": "NS (numérique + spéciaux)",
+            }.get(expected["type_code"], expected["type_code"])
+
+            # Déterminer la nature précise de la non-conformité
+            cleaned_for_check = value.replace("*", "")
+            if expected["type_code"] == "N":
+                non_conformity = "attendu numérique (chiffres uniquement), contient des lettres ou symboles"
+            elif expected["type_code"] == "A":
+                non_conformity = "attendu alphabétique (lettres uniquement), contient des chiffres ou symboles"
+            else:
+                non_conformity = f"ne respecte pas le type attendu {type_label}"
+
+            max_len = expected.get("max_len") or expected.get("max_length")
+            if max_len and len(cleaned_for_check) > max_len:
+                non_conformity += f"; longueur ({len(cleaned_for_check)}) dépasse le maximum ({max_len})"
+
             alerts.append({
                 "field_number": field_number,
                 "field_name": definition.get("field_name", f"Field {field_number}"),
                 "value": value,
+                "observed_value": value,
                 "expected_type": expected["type_code"],
+                "expected_type_label": type_label,
+                "max_length": expected.get("max_length"),
                 "source_file": definition.get("source_file", "documentation"),
+                "non_conformity_type": non_conformity,
                 "message": (
                     f"Field {field_number} ({definition.get('field_name', '')}) : valeur '{value}' "
                     f"ne respecte pas le type attendu '{expected['type_code']}' "

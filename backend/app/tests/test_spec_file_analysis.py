@@ -104,7 +104,7 @@ class TestSpecFileAnalysis(unittest.TestCase):
         mock_agent_invoke.assert_called_once()
         
         passed_inputs = mock_agent_invoke.call_args[0][0]
-        self.assertTrue(passed_inputs["doc_session_id"].startswith("analysis_"))
+        self.assertTrue(passed_inputs["doc_session_id"].startswith("job_"))
 
 
 if __name__ == "__main__":

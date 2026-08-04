@@ -55,7 +55,7 @@ class TestOptionalSpecAndSessionRAG(unittest.TestCase):
 
             # Assert similarity_search was called with session_id filter
             mock_vs.similarity_search.assert_called_once_with(
-                "GetOriginalAuthData", k=4, filter={"session_id": "session_test_123"}
+                "GetOriginalAuthData", k=8, filter={"session_id": "session_test_123"}
             )
             self.assertIn("=== DOCUMENT DE SPÉCIFICATION FOURNI POUR CETTE ANALYSE ===", res["rag_context"])
             self.assertIn("uploaded_spec.pdf", res["rag_context"])
