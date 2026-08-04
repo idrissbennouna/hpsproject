@@ -64,9 +64,11 @@ RE_MTI = re.compile(r"M\.T\.I\s*:\s*\[?(\d{4})\]?")
 HEARTBEAT_MTIS = {"0800", "0810"}
 
 # Détection générique des fonctions en échec non documentées dans l'Excel
-# Capture : NomFonction() ... NOK | -1 | -2 | error
+# Capture : NomFonction ... NOK | ( NOK ) | (-1) | ( -1 ) | NOK (-1) | != OK
 RE_GENERIC_FAILURE = re.compile(
-    r"\b([A-Z][A-Za-z0-9_]{3,})\s*\(\s*\)\s*.*?\b(NOK|-1|-2|error)\b",
+    r"\b(?P<func>[A-Za-z][A-Za-z0-9_]{2,})\b"
+    r"(?:\s*\(\s*\))?"
+    r"\s*(?P<fail>NOK\s*\(\s*-\d+\s*\)|NOK|\(\s*NOK\s*\)|\(\s*-\d+\s*\)|!=\s*OK|!=\s*0|ERROR)",
     re.IGNORECASE
 )
 
@@ -75,7 +77,8 @@ def _build_function_failure_patterns(spec_path: Optional[str] = None) -> Dict[st
     patterns = {}
     for func in get_monitored_function_names(spec_path):
         patterns[func] = re.compile(
-            rf"{re.escape(func)}\s*\(?\s*(NOK|-1|-2|!=\s*OK)", re.IGNORECASE
+            rf"\b{re.escape(func)}\b(?:\s*\(\s*\))?\s*(?P<fail>NOK\s*\(\s*-\d+\s*\)|NOK|\(\s*NOK\s*\)|\(\s*-\d+\s*\)|!=\s*OK|!=\s*0|ERROR)",
+            re.IGNORECASE
         )
     return patterns
 
@@ -493,62 +496,65 @@ def parse_trace_file(
                     if func_name not in line:
                         continue
 
-                    if "End" in line:
-                        pattern = function_patterns.get(func_name)
-                        match_fail = pattern.search(line) if pattern else None
+                    pattern = function_patterns.get(func_name)
+                    match_fail = pattern.search(line) if pattern else None
 
-                        if match_fail:
-                            code = match_fail.group(1)
-                            anomalie = f"{func_name}() a échoué (résultat : {code})."
-                            _add_event(
-                                tx,
-                                f"{prefix_str}ALERTE : {anomalie}",
-                                line_num=line_idx, timestamp=timestamp, level=level
-                            )
-                            enriched_event_added = True
-                            tx["alerts"].append(anomalie)
-                            if func_name not in tx["failed_functions"]:
-                                tx["failed_functions"].append(func_name)
-                        else:
-                            res_match = re.search(rf"{re.escape(func_name)}\s*\(\s*([^)]*)\)", line)
-                            res_str = res_match.group(1).strip() if res_match and res_match.group(1) else "OK"
-                            _add_event(
-                                tx,
-                                f"{prefix_str}Fonction {func_name}() exécutée avec succès (résultat : {res_str}).",
-                                line_num=line_idx, timestamp=timestamp, level=level
-                            )
-                            enriched_event_added = True
-                            if func_name not in tx["successful_functions"]:
-                                tx["successful_functions"].append(func_name)
-                        matched_known_func = True
-                        break
-
-                # Détection générique : fonctions en échec NON documentées dans l'Excel
-                if "End" in line and not matched_known_func:
-                    for gen_match in RE_GENERIC_FAILURE.finditer(line):
-                        generic_func = gen_match.group(1)
-                        generic_code = gen_match.group(2)
-                        # Ignorer si c'est déjà une fonction connue/traitée
-                        if generic_func in monitored_functions:
-                            continue
-                        # Ignorer si déjà dans failed_functions
-                        already_known = any(
-                            (f == generic_func or (isinstance(f, str) and f.startswith(generic_func)))
-                            for f in tx["failed_functions"]
-                        )
-                        if already_known:
-                            continue
-                        anomalie_generic = (
-                            f"{generic_func}() a échoué (résultat : {generic_code})"
-                            " — fonction non documentée dans Spec_PowerCARD.xlsx."
-                        )
+                    if match_fail:
+                        code = match_fail.group("fail") if "fail" in match_fail.groupdict() else match_fail.group(1)
+                        anomalie = f"{func_name}() a échoué (résultat : {code})."
                         _add_event(
                             tx,
-                            f"{prefix_str}ALERTE [GÉNÉRIQUE] : {anomalie_generic}",
+                            f"{prefix_str}ALERTE : {anomalie}",
                             line_num=line_idx, timestamp=timestamp, level=level
                         )
                         enriched_event_added = True
-                        tx["alerts"].append(anomalie_generic)
+                        if anomalie not in tx["alerts"]:
+                            tx["alerts"].append(anomalie)
+                        if func_name not in tx["failed_functions"]:
+                            tx["failed_functions"].append(func_name)
+                        matched_known_func = True
+                        break
+                    elif any(w in line for w in ("End", "Exit", "Return", "END", "EXIT")):
+                        res_match = re.search(rf"{re.escape(func_name)}\s*\(\s*([^)]*)\)", line)
+                        res_str = res_match.group(1).strip() if res_match and res_match.group(1) else "OK"
+                        _add_event(
+                            tx,
+                            f"{prefix_str}Fonction {func_name}() exécutée avec succès (résultat : {res_str}).",
+                            line_num=line_idx, timestamp=timestamp, level=level
+                        )
+                        enriched_event_added = True
+                        if func_name not in tx["successful_functions"]:
+                            tx["successful_functions"].append(func_name)
+                        matched_known_func = True
+                        break
+
+                # Détection générique : fonctions en échec non répertoriées dans l'Excel
+                if not matched_known_func:
+                    for gen_match in RE_GENERIC_FAILURE.finditer(line):
+                        generic_func = gen_match.group("func")
+                        generic_code = gen_match.group("fail")
+
+                        if generic_func.upper() in {"END", "START", "FLD", "MTI", "PAN", "STAN", "RRN", "FROM", "TO", "HSM", "LEVEL"}:
+                            continue
+
+                        is_monitored = generic_func in monitored_functions
+
+                        if is_monitored:
+                            anomalie_text = f"{generic_func}() a échoué (résultat : {generic_code})."
+                        else:
+                            anomalie_text = (
+                                f"{generic_func}() a échoué (résultat : {generic_code})"
+                                " — fonction non documentée dans Spec_PowerCARD.xlsx."
+                            )
+
+                        _add_event(
+                            tx,
+                            f"{prefix_str}ALERTE : {anomalie_text}",
+                            line_num=line_idx, timestamp=timestamp, level=level
+                        )
+                        enriched_event_added = True
+                        if anomalie_text not in tx["alerts"]:
+                            tx["alerts"].append(anomalie_text)
                         if generic_func not in tx["failed_functions"]:
                             tx["failed_functions"].append(generic_func)
 
@@ -574,7 +580,11 @@ def parse_trace_file(
     heartbeat_count = sum(1 for tx in all_transactions if tx.get("is_heartbeat"))
 
     if not include_heartbeats:
-        final_transactions = [tx for tx in all_transactions if not tx.get("is_heartbeat")]
+        # Ne filtrer un heartbeat que s'il n'a AUCUNE fonction en échec ni alerte
+        final_transactions = [
+            tx for tx in all_transactions
+            if not (tx.get("is_heartbeat") and not tx.get("failed_functions") and not tx.get("alerts_found"))
+        ]
     else:
         final_transactions = all_transactions
 
