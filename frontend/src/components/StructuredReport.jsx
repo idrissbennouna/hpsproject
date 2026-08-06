@@ -140,9 +140,13 @@ function ChronologyStep({ step, failedFunctions, sessionId }) {
 
   // Détecte si cette étape mentionne une fonction en échec
   useEffect(() => {
-    if (!failedFunctions || failedFunctions.length === 0) return;
+    if (!failedFunctions || failedFunctions.length === 0) {
+      setMatchedFunc(null);
+      return;
+    }
+    const stepLower = (step || "").toLowerCase();
     for (const fn of failedFunctions) {
-      if (step && step.includes(fn)) {
+      if (fn && stepLower.includes(String(fn).toLowerCase())) {
         setMatchedFunc(fn);
         return;
       }

@@ -69,6 +69,86 @@ llm = ChatGoogleGenerativeAI(
 )
 
 
+def _tx_match_key(tx: dict) -> str:
+    """Clé de rapprochement RRN → STAN → transaction_id pour fusion parser/LLM."""
+    if not isinstance(tx, dict):
+        return ""
+    for key in ("rrn", "stan", "transaction_id"):
+        val = str(tx.get(key) or "").strip()
+        if val:
+            return f"{key}:{val}"
+    return ""
+
+
+def _enrich_report_with_parser_data(report: dict, log_data_json: str) -> dict:
+    """
+    Réinjecte failed_functions (et champs utiles) depuis le parser dans le rapport LLM.
+
+    Le schéma LLM omettait historiquement failed_functions : le frontend n'affichait
+    alors jamais le bouton "?" (condition : failed_functions.length > 0).
+    Cette fusion est déterministe et ne dépend pas du LLM.
+    """
+    if not isinstance(report, dict):
+        return report
+
+    try:
+        parsed_txs = json.loads(log_data_json or "[]")
+    except Exception:
+        parsed_txs = []
+
+    if not isinstance(parsed_txs, list) or not parsed_txs:
+        return report
+
+    by_key = {}
+    for ptx in parsed_txs:
+        if not isinstance(ptx, dict):
+            continue
+        key = _tx_match_key(ptx)
+        if key:
+            by_key[key] = ptx
+
+    report_txs = report.get("transactions")
+    if not isinstance(report_txs, list):
+        return report
+
+    for idx, rtx in enumerate(report_txs):
+        if not isinstance(rtx, dict):
+            continue
+
+        src = by_key.get(_tx_match_key(rtx))
+        # Fallback positionnel si RRN/STAN absents côté LLM
+        if src is None and idx < len(parsed_txs) and isinstance(parsed_txs[idx], dict):
+            src = parsed_txs[idx]
+        if not src:
+            continue
+
+        parser_failed = src.get("failed_functions") or []
+        if not isinstance(parser_failed, list):
+            parser_failed = []
+
+        existing = rtx.get("failed_functions")
+        if not isinstance(existing, list):
+            existing = []
+
+        # Union ordonnée : parser d'abord (source de vérité), puis éventuels ajouts LLM
+        merged = []
+        for fn in list(parser_failed) + list(existing):
+            name = str(fn).strip() if fn is not None else ""
+            if name and name not in merged:
+                merged.append(name)
+        rtx["failed_functions"] = merged
+
+        if not rtx.get("processing_code") and src.get("processing_code"):
+            rtx["processing_code"] = src.get("processing_code")
+
+        if not (rtx.get("pistes_diagnostiques") or "").strip() and merged:
+            rtx["pistes_diagnostiques"] = (
+                f"Échec détecté sur : {', '.join(merged)}."
+            )
+
+    return report
+
+
 def _resolve_log_path(filename: str) -> str:
     """Cherche le fichier de trace dans le(s) dossier(s) de stockage configuré(s)."""
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
@@ -204,10 +284,13 @@ def compliance_auditor_node(state: AgentState) -> Dict[str, Any]:
             '      "pan_masked": <string, masquer tous sauf les 4 derniers chiffres ex: "•••• •••• •••• 1991">,\n'
             '      "stan": <string>,\n'
             '      "rrn": <string>,\n'
+            '      "processing_code": <string>,\n'
             '      "response_code": <string>,\n'
             '      "response_code_label": <string, ex: "Approuvée" ou "Déclinée">,\n'
             '      "approval_status": <"approved" | "declined">,\n'
             '      "alerts": [<string>, ...],\n'
+            '      "failed_functions": [<string, noms EXACTS des fonctions en échec issus de failed_functions dans les données parser>, ...],\n'
+            '      "pistes_diagnostiques": <string, courte piste si des fonctions ont échoué, sinon "">,\n'
             '      "chronology": [<string>, ...]\n'
             "    }}\n"
             "  ],\n"
@@ -226,6 +309,8 @@ def compliance_auditor_node(state: AgentState) -> Dict[str, Any]:
             "Règles :\n"
             "- IMPORTANT : le JSON des transactions fourni contient TOUTES les transactions de la trace. Traite-les toutes.\n"
             "- Pour chaque transaction avec un champ `alerts_found` non vide, passe `is_suspicious` à true et renseigne les `alerts` avec de courts libellés d'alerte.\n"
+            "- OBLIGATOIRE : copie telle quelle la liste `failed_functions` de chaque transaction parser vers le champ `failed_functions` du rapport "
+            "(noms exacts, ex. GetAuthRouting). Si la liste parser est vide, mets `[]`. Ne renomme et n'omets aucune fonction.\n"
             "- Remplis la section `field_analysis` STRICTEMENT à partir des informations trouvées dans les listes `format_alerts` des transactions. Transpose chaque alerte de `format_alerts` en un élément du tableau `field_analysis` en utilisant fidèlement les clés : `field_number` (ex. 'FLD 003'), `field_name`, `expected_type` (utilise attributes ou expected_type_label), `source` (provenant de la clé source/source_file), `observed_value`, `non_conformity_type` et une note descriptive sur la non-conformité dans `compliance_note`.\n"
             "- Si le testeur demande UNIQUEMENT la story (sans alertes ni justification), retourne le JSON avec `alerts` et `field_analysis` sous forme de listes vides `[]` et `suspicious_count` à 0.\n"
             "- Si la demande est d'analyser le fichier ou demande les alertes/justifications/pistes, remplis l'intégralité des sections `summary`, `transactions` et `field_analysis`.\n"
@@ -277,7 +362,9 @@ def compliance_auditor_node(state: AgentState) -> Dict[str, Any]:
     try:
         parsed_json = json.loads(cleaned_text)
         if isinstance(parsed_json, dict) and ("summary" in parsed_json or "transactions" in parsed_json):
-            final_data = parsed_json
+            final_data = _enrich_report_with_parser_data(
+                parsed_json, state.get("log_data_json", "[]")
+            )
         else:
             final_data = {"raw_fallback": normalized_response}
     except Exception as parse_err:

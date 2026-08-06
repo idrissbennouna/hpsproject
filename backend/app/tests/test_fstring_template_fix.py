@@ -346,5 +346,59 @@ class TestFunctionDocumentationRoute(unittest.TestCase):
         )
 
 
+class TestEnrichReportWithParserData(unittest.TestCase):
+    """Le bouton '?' frontend dépend de failed_functions dans le rapport final."""
+
+    def test_reinjects_failed_functions_when_llm_omits_them(self):
+        from app.core.agent_graph import _enrich_report_with_parser_data
+
+        report = {
+            "summary": {"total_transactions": 1},
+            "transactions": [
+                {
+                    "transaction_id": "TXN-1",
+                    "rrn": "123456789012",
+                    "stan": "000001",
+                    "alerts": [],
+                    "chronology": ["Appel GetAuthRouting"],
+                }
+            ],
+        }
+        log_data = json.dumps([
+            {
+                "rrn": "123456789012",
+                "stan": "000001",
+                "failed_functions": ["GetAuthRouting"],
+                "processing_code": "000000",
+            }
+        ])
+
+        enriched = _enrich_report_with_parser_data(report, log_data)
+        tx = enriched["transactions"][0]
+        self.assertEqual(tx["failed_functions"], ["GetAuthRouting"])
+        self.assertEqual(tx["processing_code"], "000000")
+        self.assertIn("GetAuthRouting", tx["pistes_diagnostiques"])
+
+    def test_merges_without_duplicates(self):
+        from app.core.agent_graph import _enrich_report_with_parser_data
+
+        report = {
+            "transactions": [
+                {
+                    "rrn": "999",
+                    "failed_functions": ["AuthProcess"],
+                }
+            ],
+        }
+        log_data = json.dumps([
+            {"rrn": "999", "failed_functions": ["AuthProcess", "GetAuthRouting"]}
+        ])
+        enriched = _enrich_report_with_parser_data(report, log_data)
+        self.assertEqual(
+            enriched["transactions"][0]["failed_functions"],
+            ["AuthProcess", "GetAuthRouting"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
