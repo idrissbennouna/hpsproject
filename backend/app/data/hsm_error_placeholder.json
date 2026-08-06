@@ -1,0 +1,44 @@
+{
+  "05": {
+    "title": "HSM Result Code 05",
+    "description": "Code retour HSM non nominal (HsmResultCode = 05).",
+    "meaning": "Le HSM a rejeté l'opération cryptographique demandée. Selon le manuel Thales payShield Core Host Commands (PUGD0537), le détail dépend de la commande émise (ex. EC→ED).",
+    "diagnostic_hint": "Vérifier la commande TO HSM précédente, le format du PIN block / cryptogramme, et la table d'erreurs de la réponse (ED, CX, …) dans PUGD0537-004 Core Host Commands V1.",
+    "source": "hsm_error_placeholder.json / PUGD0537"
+  },
+  "15": {
+    "title": "HSM Error 15 — Invalid PIN Block / format",
+    "description": "Erreur fréquente sur les commandes de vérification PIN / ARQC.",
+    "meaning": "Le bloc PIN ou le format cryptographique présenté au HSM est invalide ou désactivé.",
+    "diagnostic_hint": "Contrôler le format PIN block, la clé PVK/LMK et la commande source (souvent EC). Consulter la table d'erreurs ED dans PUGD0537.",
+    "source": "hsm_error_placeholder.json / PUGD0537"
+  },
+  "99": {
+    "title": "HSM Result Code 99",
+    "description": "Code d'erreur HSM générique / non nominal.",
+    "meaning": "Le module HSM a renvoyé un statut d'échec. Interpréter via le couple commande/réponse (ex. EC/ED) dans le manuel Core Host Commands.",
+    "diagnostic_hint": "Relier le HsmResultCode à la dernière commande TO HSM et ouvrir la table d'erreurs correspondante dans PUGD0537-004.",
+    "source": "hsm_error_placeholder.json / PUGD0537"
+  },
+  "ED": {
+    "title": "Réponse HSM ED (commande EC)",
+    "description": "ED est le code de réponse associé à la commande EC (Generate/Verify ARQC et opérations liées).",
+    "meaning": "Toute réponse ED avec un sous-code d'erreur indique un échec de l'opération EC côté payShield.",
+    "diagnostic_hint": "Lire le sous-code (ex. ED05, ED15) dans la table d'erreurs ED du document PUGD0537-004 Core Host Commands V1.",
+    "source": "hsm_error_placeholder.json / PUGD0537 / command_response_map.json"
+  },
+  "ED05": {
+    "title": "ED05 — Erreur réponse commande EC",
+    "description": "Réponse ED avec code d'erreur 05 pour la commande EC.",
+    "meaning": "Échec de l'opération cryptographique EC ; le sous-code 05 précise la cause dans la table d'erreurs ED.",
+    "diagnostic_hint": "Consulter PUGD0537 section commande EC / réponse ED, entrée 05. Vérifier clés, données d'entrée et format du message HSM.",
+    "source": "hsm_error_placeholder.json / PUGD0537"
+  },
+  "EC": {
+    "title": "Commande HSM EC",
+    "description": "Commande host EC (payShield) — génération / vérification cryptographique (ARQC, etc.).",
+    "meaning": "La réponse attendue est ED. Un HsmResultCode non-00 ou une réponse ED avec erreur signale un échec.",
+    "diagnostic_hint": "Analyser le buffer FROM HSM (ED…) et la table d'erreurs associée dans PUGD0537-004 Core Host Commands V1.",
+    "source": "hsm_error_placeholder.json / PUGD0537 / command_response_map.json"
+  }
+}

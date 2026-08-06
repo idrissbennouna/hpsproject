@@ -27,6 +27,8 @@ load_dotenv()
 
 # Cache mémoire pour la documentation enrichie par LLM (clé : (function_name, session_id))
 _FUNC_DOC_CACHE: Dict[tuple, dict] = {}
+# Cache mémoire documentation HSM (clé : (code, session_id))
+_HSM_DOC_CACHE: Dict[tuple, dict] = {}
 
 # Importations des applications LangGraph
 from app.core.agent_graph import compliance_agent_app
@@ -1248,4 +1250,39 @@ async def get_function_doc(function_name: str, session_id: Optional[str] = None)
 
     # Mettre en cache uniquement si on a trouvé des infos
     _FUNC_DOC_CACHE[cache_key] = result
-    return result
+    return result
+
+
+@app.get("/api/v1/hsm/{code}/doc")
+async def get_hsm_doc(code: str, session_id: Optional[str] = None):
+    """
+    Documentation d'un code / erreur HSM (payShield Core Host Commands).
+
+    Sources :
+      1. RAG session (PDF joint en placeholder)
+      2. RAG global
+      3. PDF local PUGD0537-004 Core Host Commands V1.pdf
+      4. Placeholder JSON hsm_error_placeholder.json
+    """
+    if not code or not str(code).strip():
+        raise HTTPException(status_code=400, detail="Le code HSM est requis.")
+
+    safe_code = str(code).strip()
+    cache_key = (safe_code.upper(), (session_id or "").strip())
+    if cache_key in _HSM_DOC_CACHE:
+        return _HSM_DOC_CACHE[cache_key]
+
+    try:
+        from app.services.hsm_doc_loader import lookup_hsm_documentation
+        result = await run_in_threadpool(
+            lookup_hsm_documentation, safe_code, (session_id or "").strip() or None
+        )
+    except Exception as e:
+        logger.error(f"get_hsm_doc failed for '{safe_code}': {e}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Impossible de charger la documentation HSM : {e}",
+        )
+
+    _HSM_DOC_CACHE[cache_key] = result
+    return result

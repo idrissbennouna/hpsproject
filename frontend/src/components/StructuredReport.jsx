@@ -134,7 +134,177 @@ function FunctionDocModal({ functionName, sessionId, onClose }) {
   );
 }
 
-// ─── Helpers chronologie ─────────────────────────────────────────────────────
+// ─── Modale documentation erreur HSM (PUGD0537 / RAG / placeholder) ─────────
+function extractHsmCodeFromText(text) {
+  const s = String(text || "");
+  const lower = s.toLowerCase();
+  const looksHsm =
+    /hsm|hsmresult|from hsm|to hsm|erreur hsm/.test(lower) ||
+    /\b[A-Z]{2}\d{2}\b/.test(s);
+  if (!looksHsm) return null;
+
+  const patterns = [
+    /Code d'erreur HSM\s+([A-Za-z0-9]+)/i,
+    /HsmResultCode\s*[:=]?\s*\[?([A-Za-z0-9]+)/i,
+    /Erreur HSM[^\n]*?\b([A-Za-z]{2}\d{2}|\d{2,3}|[A-Za-z]{2})\b/i,
+    /\b([A-Z]{2}\d{2})\b/,
+    /\bED\s*[_\-]?\s*(\d{2})\b/i,
+  ];
+  for (const re of patterns) {
+    const m = s.match(re);
+    if (m?.[1]) {
+      const tok = String(m[1]).toUpperCase().replace(/[_\-\s]/g, "");
+      if (/^\d{2}$/.test(tok) && /ed/i.test(s)) return `ED${tok}`;
+      return tok;
+    }
+  }
+  return null;
+}
+
+function HsmDocModal({ code, sessionId, onClose }) {
+  const [loading, setLoading] = useState(true);
+  const [docData, setDocData] = useState(null);
+  const [error, setError] = useState("");
+  const modalRef = useRef(null);
+
+  useEffect(() => {
+    const url = sessionId
+      ? `http://127.0.0.1:8000/api/v1/hsm/${encodeURIComponent(code)}/doc?session_id=${encodeURIComponent(sessionId)}`
+      : `http://127.0.0.1:8000/api/v1/hsm/${encodeURIComponent(code)}/doc`;
+
+    axios
+      .get(url)
+      .then((res) => setDocData(res.data))
+      .catch((err) => {
+        const detail = err.response?.data?.detail || "Impossible de charger la documentation HSM.";
+        setError(detail);
+      })
+      .finally(() => setLoading(false));
+  }, [code, sessionId]);
+
+  useEffect(() => {
+    const handleKey = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+
+  const handleBackdropClick = (e) => {
+    if (modalRef.current && !modalRef.current.contains(e.target)) onClose();
+  };
+
+  const title = docData?.display || code;
+  const subtitleParts = [
+    docData?.command_code && `Commande ${docData.command_code}`,
+    docData?.response_code && `Réponse ${docData.response_code}`,
+    docData?.error_number && `Erreur ${docData.error_number}`,
+  ].filter(Boolean);
+
+  return (
+    <div className="func-modal-backdrop" onClick={handleBackdropClick} role="dialog" aria-modal="true">
+      <div className="func-modal" ref={modalRef}>
+        <div className="func-modal-header" style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "4px", width: "100%", position: "relative", padding: "18px 22px" }}>
+          <h4 className="func-modal-title" style={{ margin: 0, fontSize: "17px", fontWeight: "700", color: "#1e293b" }}>
+            Erreur HSM — {title}
+          </h4>
+          <div className="func-modal-subtitle" style={{ fontSize: "12px", color: "#64748b", fontWeight: "500" }}>
+            {subtitleParts.length > 0 ? subtitleParts.join(" · ") : "payShield Core Host Commands"}
+            {" · "}
+            {docData?.doc_title || "PUGD0537-004 Core Host Commands V1"}
+          </div>
+          <button className="func-modal-close" style={{ position: "absolute", right: "22px", top: "18px" }} onClick={onClose} aria-label="Fermer">✕</button>
+        </div>
+        <div className="func-modal-body" style={{ padding: "20px 22px", display: "flex", flexDirection: "column", gap: "16px", minHeight: 0, overflowY: "auto" }}>
+          {loading && <p className="func-modal-loading">Recherche dans PUGD0537 / référentiel HSM…</p>}
+          {error && <p className="func-modal-error">⚠️ {error}</p>}
+
+          {!loading && !error && docData && !docData.found && (
+            <div className="func-modal-not-found" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "8px", textAlign: "center", padding: "20px 0" }}>
+              <span className="func-modal-not-found-icon" style={{ fontSize: "32px" }}>📪</span>
+              <p style={{ margin: 0, fontSize: "14px", color: "#475569", fontWeight: "500", lineHeight: "1.5" }}>
+                {docData.message || "Aucune documentation HSM disponible pour ce code."}
+              </p>
+            </div>
+          )}
+
+          {!loading && !error && docData && docData.found && (
+            <>
+              {docData.placeholder && (
+                <div className="func-desc-section" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <h5 style={{ margin: 0, fontSize: "12px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b" }}>
+                    {docData.placeholder.title || "Synthèse"}
+                  </h5>
+                  {docData.placeholder.description && (
+                    <p style={{ margin: 0, fontSize: "13.5px", color: "#334155", lineHeight: "1.55" }}>
+                      {docData.placeholder.description}
+                    </p>
+                  )}
+                  {docData.placeholder.meaning && (
+                    <div className="func-exception-box" style={{
+                      border: "2px solid #f97316",
+                      borderRadius: "10px",
+                      background: "linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%)",
+                      padding: "12px 14px",
+                    }}>
+                      <div style={{ fontSize: "11px", fontWeight: "800", color: "#c2410c", textTransform: "uppercase", marginBottom: "6px" }}>
+                        Signification
+                      </div>
+                      <p style={{ margin: 0, fontSize: "13.5px", color: "#9a3412", fontWeight: "600", lineHeight: "1.55", whiteSpace: "pre-wrap" }}>
+                        {docData.placeholder.meaning}
+                      </p>
+                    </div>
+                  )}
+                  {docData.placeholder.diagnostic_hint && (
+                    <p style={{ margin: 0, fontSize: "13px", color: "#475569", lineHeight: "1.5" }}>
+                      <strong>Piste :</strong> {docData.placeholder.diagnostic_hint}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {Array.isArray(docData.excerpts) && docData.excerpts.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                  <h5 style={{ margin: 0, fontSize: "12px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b" }}>
+                    Extraits — {docData.doc_title || "PUGD0537"}
+                  </h5>
+                  {docData.excerpts.map((ex, idx) => (
+                    <div key={idx} style={{
+                      border: "1px solid #e2e8f0",
+                      borderRadius: "8px",
+                      background: "#f8fafc",
+                      padding: "12px 14px",
+                    }}>
+                      <div style={{ fontSize: "11px", fontWeight: "700", color: "#1e3a8a", marginBottom: "8px" }}>
+                        {ex.source || "Source HSM"}
+                        {ex.origin ? ` · ${ex.origin}` : ""}
+                      </div>
+                      <pre style={{
+                        margin: 0,
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                        fontSize: "12.5px",
+                        lineHeight: "1.55",
+                        color: "#334155",
+                        fontFamily: "Consolas, Cascadia Code, monospace",
+                      }}>
+                        {ex.content}
+                      </pre>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {Array.isArray(docData.sources) && docData.sources.length > 0 && (
+                <div style={{ fontSize: "11px", color: "#94a3b8" }}>
+                  Sources : {docData.sources.join(" · ")}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 function isErrorLikeStep(step) {
   const s = String(step || "").toLowerCase();
   return /\b(nok|échec|echec|error|failed|échecée|refuse)\b|-\s*[1-9]\d*|r[ée]sultat\s*-/.test(s);
@@ -222,27 +392,34 @@ function renderChronologyStepText(step, matchedFunc) {
   );
 }
 
-// ─── Étape de chronologie avec détection de fonction en échec ────────────────
+// ─── Étape de chronologie avec détection de fonction en échec / HSM ──────────
 function ChronologyStep({ step, index, total, failedFunctions, sessionId }) {
   const [showDoc, setShowDoc] = useState(false);
+  const [showHsmDoc, setShowHsmDoc] = useState(false);
   const matchedFailedFunc = detectFailedFuncInStep(step, failedFunctions);
   const docFunc = extractDocFuncFromStep(step, failedFunctions);
-  const status = getChronologyStepStatus(step, matchedFailedFunc);
+  const hsmCode = !docFunc ? extractHsmCodeFromText(step) : null;
+  const displayStatus = matchedFailedFunc
+    ? "error"
+    : (hsmCode && /hsm|erreur|nok|resultcode|-\d/i.test(String(step))
+        ? "error"
+        : getChronologyStepStatus(step, null));
   const isLast = index === total - 1;
 
   return (
-    <li className={`chronology-step chrono-status-${status}${docFunc ? " chrono-has-help" : ""}`}>
+    <li className={`chronology-step chrono-status-${displayStatus}${(docFunc || hsmCode) ? " chrono-has-help" : ""}`}>
       <div className="chrono-rail" aria-hidden="true">
-        <span className={`chrono-node chrono-node-${status}`}>
-          {status === "error" ? "!" : status === "success" ? "✓" : index + 1}
+        <span className={`chrono-node chrono-node-${displayStatus}`}>
+          {displayStatus === "error" ? "!" : displayStatus === "success" ? "✓" : index + 1}
         </span>
         {!isLast && <span className="chrono-connector" />}
       </div>
       <div className="chrono-step-body">
         <div className="chrono-step-meta">
           <span className="chrono-step-index">Étape {index + 1}</span>
-          {status === "error" && <span className="chrono-status-pill chrono-pill-error">Échec</span>}
-          {status === "success" && <span className="chrono-status-pill chrono-pill-success">OK</span>}
+          {displayStatus === "error" && <span className="chrono-status-pill chrono-pill-error">Échec</span>}
+          {displayStatus === "success" && <span className="chrono-status-pill chrono-pill-success">OK</span>}
+          {hsmCode && <span className="chrono-status-pill" style={{ background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe" }}>HSM</span>}
         </div>
         <div className="chrono-step-content">
           <p className="chronology-text">{renderChronologyStepText(step, docFunc)}</p>
@@ -256,6 +433,16 @@ function ChronologyStep({ step, index, total, failedFunctions, sessionId }) {
               ?
             </button>
           )}
+          {!docFunc && hsmCode && (
+            <button
+              className="chrono-help-btn"
+              title={`Documentation HSM ${hsmCode}`}
+              onClick={() => setShowHsmDoc(true)}
+              aria-label={`Voir la documentation HSM ${hsmCode}`}
+            >
+              ?
+            </button>
+          )}
         </div>
       </div>
       {showDoc && docFunc && (
@@ -263,6 +450,13 @@ function ChronologyStep({ step, index, total, failedFunctions, sessionId }) {
           functionName={docFunc}
           sessionId={sessionId}
           onClose={() => setShowDoc(false)}
+        />
+      )}
+      {showHsmDoc && hsmCode && (
+        <HsmDocModal
+          code={hsmCode}
+          sessionId={sessionId}
+          onClose={() => setShowHsmDoc(false)}
         />
       )}
     </li>
@@ -273,6 +467,7 @@ function ChronologyStep({ step, index, total, failedFunctions, sessionId }) {
 function TransactionCard({ transaction, index, sessionId }) {
   const [expanded, setExpanded] = useState(false);
   const [selectedDocFunc, setSelectedDocFunc] = useState(null);
+  const [selectedHsmCode, setSelectedHsmCode] = useState(null);
 
   const isApproved =
     transaction.approval_status === "approved" ||
@@ -292,8 +487,10 @@ function TransactionCard({ transaction, index, sessionId }) {
     chronologySteps
   );
 
+  const alerts = Array.isArray(transaction.alerts) ? transaction.alerts : [];
+
   const alertCount = (() => {
-    const fromAlerts = Array.isArray(transaction.alerts) ? transaction.alerts.length : 0;
+    const fromAlerts = alerts.length;
     // Aligne le badge "X alerte(s)" sur failed_functions (source de vérité des échecs)
     return Math.max(fromAlerts, failedFunctions.length);
   })();
@@ -407,11 +604,25 @@ function TransactionCard({ transaction, index, sessionId }) {
         <div className="tx-alerts-row">
           <span className="tx-alerts-title">Alertes :</span>
           <div className="alerts-chips-container">
-            {transaction.alerts.map((alert, aIdx) => (
-              <span key={aIdx} className="alert-chip">
-                {alert}
-              </span>
-            ))}
+            {alerts.map((alert, aIdx) => {
+              const hsmCode = extractHsmCodeFromText(alert);
+              return (
+                <span key={aIdx} className="alert-chip" style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                  <span>{alert}</span>
+                  {hsmCode && (
+                    <button
+                      className="chrono-help-btn"
+                      style={{ width: "18px", height: "18px", fontSize: "10px", padding: 0 }}
+                      title={`Documentation HSM ${hsmCode}`}
+                      onClick={() => setSelectedHsmCode(hsmCode)}
+                      aria-label={`Voir la documentation HSM ${hsmCode}`}
+                    >
+                      ?
+                    </button>
+                  )}
+                </span>
+              );
+            })}
           </div>
         </div>
       )}
@@ -470,6 +681,13 @@ function TransactionCard({ transaction, index, sessionId }) {
           functionName={selectedDocFunc}
           sessionId={sessionId}
           onClose={() => setSelectedDocFunc(null)}
+        />
+      )}
+      {selectedHsmCode && (
+        <HsmDocModal
+          code={selectedHsmCode}
+          sessionId={sessionId}
+          onClose={() => setSelectedHsmCode(null)}
         />
       )}
     </div>
