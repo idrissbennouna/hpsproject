@@ -1,0 +1,336 @@
+{
+  "version": "1.0",
+  "source_document": "vip-system-BASE-i-tech-specs-volume-1.pdf",
+  "description": "Référentiel officiel des champs ISO 8583 extrait du PDF VIP System BASE I. Ce fichier fait AUTORITÉ sur STANDARD_ISO_FIELDS pour la validation de conformité.",
+  "fields": {
+    "1": {
+      "name": "Bitmap",
+      "length": 8,
+      "type_code": "B",
+      "format": "Binary",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "2": {
+      "name": "Primary Account Number (PAN)",
+      "length": 19,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "3": {
+      "name": "Processing Code",
+      "length": 6,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "4": {
+      "name": "Amount, Transaction",
+      "length": 12,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "5": {
+      "name": "Amount, Settlement",
+      "length": 12,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "6": {
+      "name": "Amount, Cardholder Billing",
+      "length": 12,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "7": {
+      "name": "Transmission Date & Time",
+      "length": 10,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "9": {
+      "name": "Conversion Rate, Settlement",
+      "length": 8,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "10": {
+      "name": "Conversion Rate, Cardholder Billing",
+      "length": 8,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "11": {
+      "name": "System Trace Audit Number (STAN)",
+      "length": 6,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "12": {
+      "name": "Time, Local Transaction",
+      "length": 6,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "13": {
+      "name": "Date, Local Transaction",
+      "length": 4,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "14": {
+      "name": "Date, Expiration",
+      "length": 4,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "15": {
+      "name": "Date, Settlement",
+      "length": 4,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "16": {
+      "name": "Date, Conversion",
+      "length": 4,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "17": {
+      "name": "Date, Capture",
+      "length": 4,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "18": {
+      "name": "Merchant Type (MCC)",
+      "length": 4,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "19": {
+      "name": "Acquiring Institution Country Code",
+      "length": 3,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "20": {
+      "name": "PAN Country Code",
+      "length": 3,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "21": {
+      "name": "Forwarding Institution Country Code",
+      "length": 3,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "22": {
+      "name": "Point of Service Entry Mode",
+      "length": 3,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "23": {
+      "name": "Card Sequence Number",
+      "length": 3,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "24": {
+      "name": "Function Code (NII)",
+      "length": 3,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "25": {
+      "name": "Point of Service Condition Code",
+      "length": 2,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "26": {
+      "name": "Point of Service PIN Capture Code",
+      "length": 2,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "28": {
+      "name": "Amount, Transaction Fee",
+      "length": 8,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "29": {
+      "name": "Amount, Settlement Fee",
+      "length": 8,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "30": {
+      "name": "Amount, Transaction Processing Fee",
+      "length": 8,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "31": {
+      "name": "Amount, Settlement Processing Fee",
+      "length": 8,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "32": {
+      "name": "Acquiring Institution Identification Code",
+      "length": 11,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "33": {
+      "name": "Forwarding Institution Identification Code",
+      "length": 11,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "35": {
+      "name": "Track 2 Data",
+      "length": 37,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "37": {
+      "name": "Retrieval Reference Number (RRN)",
+      "length": 12,
+      "type_code": "AN",
+      "format": "EBCDIC",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "38": {
+      "name": "Authorization Identification Response",
+      "length": 6,
+      "type_code": "AN",
+      "format": "EBCDIC",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "39": {
+      "name": "Response Code",
+      "length": 2,
+      "type_code": "AN",
+      "format": "EBCDIC",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "40": {
+      "name": "Service Restriction Code",
+      "length": 3,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "41": {
+      "name": "Card Acceptor Terminal Identification",
+      "length": 8,
+      "type_code": "ANS",
+      "format": "EBCDIC",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "42": {
+      "name": "Card Acceptor Identification Code",
+      "length": 15,
+      "type_code": "ANS",
+      "format": "EBCDIC",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "43": {
+      "name": "Card Acceptor Name/Location",
+      "length": 40,
+      "type_code": "ANS",
+      "format": "EBCDIC",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "49": {
+      "name": "Currency Code, Transaction",
+      "length": 3,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "50": {
+      "name": "Currency Code, Settlement",
+      "length": 3,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "51": {
+      "name": "Currency Code, Cardholder Billing",
+      "length": 3,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "52": {
+      "name": "Personal Identification Number (PIN) Data",
+      "length": 8,
+      "type_code": "B",
+      "format": "Binary",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "55": {
+      "name": "Integrated Circuit Card System Related Data",
+      "length": 255,
+      "type_code": "ANS",
+      "format": "Binary",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "70": {
+      "name": "Network Management Information Code",
+      "length": 3,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "90": {
+      "name": "Original Data Elements",
+      "length": 42,
+      "type_code": "N",
+      "format": "BCD",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    },
+    "66": {
+      "name": "0012",
+      "length": 5,
+      "type_code": "C0",
+      "format": "",
+      "source": "vip-system-BASE-i-tech-specs-volume-1.pdf"
+    }
+  }
+}

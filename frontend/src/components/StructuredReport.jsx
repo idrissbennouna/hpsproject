@@ -36,69 +36,96 @@ function FunctionDocModal({ functionName, sessionId, onClose }) {
     if (modalRef.current && !modalRef.current.contains(e.target)) onClose();
   };
 
-  const LLM_SECTIONS = [
-    { key: "description",     icon: "📖", label: "Description" },
-    { key: "call_context",    icon: "🔄", label: "Contexte d'appel" },
-    { key: "failure_meaning", icon: "⚠️", label: "Signification de l'échec" },
-    { key: "diagnostic_hint", icon: "🔍", label: "Que vérifier en premier" },
-  ];
-
   return (
     <div className="func-modal-backdrop" onClick={handleBackdropClick} role="dialog" aria-modal="true">
       <div className="func-modal" ref={modalRef}>
-        <div className="func-modal-header">
-          <h4 className="func-modal-title">
-            Documentation — <code>{functionName}</code>
+        <div className="func-modal-header" style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "4px", width: "100%", position: "relative", padding: "18px 22px" }}>
+          <h4 className="func-modal-title" style={{ margin: 0, fontSize: "17px", fontWeight: "700", color: "#1e293b" }}>
+            {functionName}
           </h4>
-          <button className="func-modal-close" onClick={onClose} aria-label="Fermer">✕</button>
+          {docData && docData.found && (docData.excel_source || docData.excel_path) && (
+            <div className="func-modal-subtitle" style={{ fontSize: "12px", color: "#64748b", fontWeight: "500" }}>
+              {docData.excel_source}{docData.excel_path ? ` / ${docData.excel_path}` : ""}
+            </div>
+          )}
+          <button className="func-modal-close" style={{ position: "absolute", right: "22px", top: "18px" }} onClick={onClose} aria-label="Fermer">✕</button>
         </div>
-        <div className="func-modal-body">
+        <div className="func-modal-body" style={{ padding: "20px 22px", display: "flex", flexDirection: "column", gap: "16px" }}>
           {loading && <p className="func-modal-loading">🔄 Recherche dans la documentation…</p>}
           {error && <p className="func-modal-error">⚠️ {error}</p>}
 
           {/* Cas : fonction introuvable */}
           {!loading && !error && docData && !docData.found && (
-            <div className="func-modal-not-found">
-              <span className="func-modal-not-found-icon">📪</span>
-              <p>Documentation non disponible pour <code>{functionName}</code>.</p>
-              <p className="func-modal-not-found-hint">
-                {docData.message || "Cette fonction n'est pas répertoriée dans Spec_PowerCARD.xlsx ni dans le document de session."}
+            <div className="func-modal-not-found" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "8px", textAlign: "center", padding: "20px 0" }}>
+              <span className="func-modal-not-found-icon" style={{ fontSize: "32px" }}>📪</span>
+              <p style={{ margin: 0, fontSize: "14px", color: "#475569", fontWeight: "500", lineHeight: "1.5" }}>
+                {docData.message || "Cette fonction n'est pas documentée dans Spec_PowerCARD.xlsx. Aucune information sur ses conditions d'échec n'est disponible."}
               </p>
             </div>
           )}
 
-          {/* Cas : 4 sections LLM structurées */}
-          {!loading && !error && docData && docData.found && docData.llm_structured && (
-            <div className="func-modal-llm-sections">
-              {LLM_SECTIONS.map(({ key, icon, label }) => (
-                <div key={key} className="func-llm-card">
-                  <div className="func-llm-card-header">
-                    <span className="func-llm-icon">{icon}</span>
-                    <span className="func-llm-label">{label}</span>
-                  </div>
-                  <p className="func-llm-content">{docData.llm_structured[key] || "Information non disponible."}</p>
-                </div>
-              ))}
-              {docData.raw_sources_count > 0 && (
-                <p className="func-modal-sources-note">📚 Sources consultées : {docData.raw_sources_count} extrait(s)</p>
-              )}
-            </div>
-          )}
+          {/* Cas : fonction documentée */}
+          {!loading && !error && docData && docData.found && (
+            <>
+              {/* Section Description */}
+              <div className="func-desc-section" style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <h5 style={{ margin: 0, fontSize: "12px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b" }}>
+                  Description
+                </h5>
+                <p style={{ margin: 0, fontSize: "13.5px", color: "#334155", lineHeight: "1.55" }}>
+                  {docData.excel_description || "Aucune description disponible dans la spécification."}
+                </p>
+              </div>
 
-          {/* Fallback gracieux : format documentation brute */}
-          {!loading && !error && docData && docData.found && !docData.llm_structured && (
-            <div className="func-modal-docs">
-              {(docData.documentation && docData.documentation.length > 0) ? (
-                docData.documentation.map((section, idx) => (
-                  <div key={idx} className="func-doc-section">
-                    <div className="func-doc-source-badge">{section.source}</div>
-                    <pre className="func-doc-content">{section.content}</pre>
-                  </div>
-                ))
-              ) : (
-                <p className="func-modal-empty">Aucun extrait de documentation brute disponible.</p>
-              )}
-            </div>
+              {/* Section Conditions d'échec mise en évidence (fond orange/rouge clair avec icône d'alerte) */}
+              <div className="func-exception-box" style={{
+                border: "2px solid #f97316",
+                borderRadius: "10px",
+                background: "linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%)",
+                boxShadow: "0 4px 14px rgba(249, 115, 22, 0.12)",
+                overflow: "hidden",
+                margin: "8px 0 4px 0",
+                animation: "exception-pulse 0.35s ease"
+              }}>
+                <div className="func-exception-header" style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  padding: "10px 14px",
+                  background: "rgba(249, 115, 22, 0.08)",
+                  borderBottom: "1px solid rgba(249, 115, 22, 0.15)"
+                }}>
+                  <span className="func-exception-icon" style={{ fontSize: "16px" }}>⚠️</span>
+                  <span className="func-exception-title" style={{ fontSize: "12px", fontWeight: "800", color: "#c2410c", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                    Conditions d'échec
+                  </span>
+                  <span className="func-exception-badge" style={{
+                    marginLeft: "auto",
+                    fontSize: "10px",
+                    fontWeight: "700",
+                    color: "#c2410c",
+                    background: "rgba(249, 115, 22, 0.12)",
+                    border: "1px solid rgba(249, 115, 22, 0.25)",
+                    borderRadius: "20px",
+                    padding: "2px 8px"
+                  }}>
+                    Spec_PowerCARD.xlsx — Exception
+                  </span>
+                </div>
+                <p className="func-exception-text" style={{
+                  margin: 0,
+                  padding: "12px 14px",
+                  fontSize: "14px",
+                  fontWeight: "600",
+                  color: "#9a3412",
+                  lineHeight: "1.6",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word"
+                }}>
+                  {docData.excel_exception || "Aucune condition d'échec documentée pour cette fonction."}
+                </p>
+              </div>
+            </>
           )}
         </div>
       </div>

@@ -44,13 +44,77 @@ def load_excel_specs(excel_path: Path) -> list[Document]:
 
 def load_pdf_field_sections(pdf_path: Path) -> list[Document]:
     """
-    TODO: Découper les PDF de specs par section de champ numérotée type
-    '4.105 Field 110—...'.
-    Retourne une liste vide pour le moment.
+    Découpe le PDF de spécifications par section de champ numérotée de type 'Field N—...'.
+    Extrait les documents et conserve les métadonnées de page et de champ.
     """
-    # STUB pour l'instant
-    print(f"📝 STUB load_pdf_field_sections appelé pour {pdf_path}. Non implémenté.")
-    return []
+    import re
+    pdf_path = Path(pdf_path)
+    if not pdf_path.exists():
+        print(f"⚠️ Fichier PDF introuvable : {pdf_path} — ignoré.")
+        return []
+
+    try:
+        import pdfplumber
+    except ImportError:
+        print("⚠️ pdfplumber est requis pour parser les sections du PDF.")
+        return []
+
+    print(f"📄 Analyse et découpage par sections du PDF : {pdf_path.name}...")
+    documents = []
+    
+    current_field_num = None
+    current_field_name = None
+    current_content = []
+    current_page = None
+
+    try:
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            for page_num, page in enumerate(pdf.pages, 1):
+                text = page.extract_text() or ""
+                for line in text.splitlines():
+                    # Détecte le début d'une section de champ
+                    match = re.search(r"Field\s+(\d{1,3})\s*[—\-–]+\s*(.+)", line, re.IGNORECASE)
+                    if match:
+                        if current_field_num and current_content:
+                            doc_content = "\n".join(current_content)
+                            documents.append(Document(
+                                page_content=doc_content,
+                                metadata={
+                                    "source": pdf_path.name,
+                                    "source_file": pdf_path.name,
+                                    "field_number": current_field_num,
+                                    "field_name": current_field_name,
+                                    "page": current_page,
+                                    "attributes": ""  # Sera extrait si disponible lors de la validation
+                                }
+                            ))
+                        current_field_num = match.group(1)
+                        current_field_name = match.group(2).strip()
+                        current_page = page_num
+                        current_content = [line]
+                    else:
+                        if current_field_num:
+                            current_content.append(line)
+
+            # Ajouter la dernière section
+            if current_field_num and current_content:
+                doc_content = "\n".join(current_content)
+                documents.append(Document(
+                    page_content=doc_content,
+                    metadata={
+                        "source": pdf_path.name,
+                        "source_file": pdf_path.name,
+                        "field_number": current_field_num,
+                        "field_name": current_field_name,
+                        "page": current_page,
+                        "attributes": ""
+                    }
+                ))
+        print(f"📊 {len(documents)} sections de champs extraites du PDF {pdf_path.name}.")
+    except Exception as e:
+        print(f"❌ Erreur lors du découpage du PDF {pdf_path.name} : {e}")
+
+    return documents
 
 def load_all_docs(storage_dir: Path) -> list[Document]:
     """

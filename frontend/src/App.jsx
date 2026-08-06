@@ -5,26 +5,19 @@ import ValidationAgentPanel from "./ValidationAgentPanel";
 import StructuredReport from "./components/StructuredReport";
 import "./App.css";
 
-// ─── Utilitaire : timestamp relatif ─────────────────────────────────────────────────
-function relativeTime(isoString) {
+// ─── Utilitaire : date courte pour le tooltip de la sidebar ────────────────────
+// Le timestamp relatif "il y a Xh" est supprimé de l'UI (peu fiable).
+// La date reste accessible au survol (title) formatée en jj/mm HH:MM.
+function formatShortDate(isoString) {
   if (!isoString) return "";
   try {
-    // Normalise les timestamps UTC Python qui peuvent avoir 6 décimales (µs)
-    // vers 3 décimales (ms) pour éviter NaN sur les navigateurs stricts.
-    // Ex: "2026-08-06T10:01:28.123456+00:00" → "2026-08-06T10:01:28.123+00:00"
     const normalized = isoString.replace(
       /(\d{2}:\d{2}:\d{2})\.?(\d{3})?(\d*)([+Z])/,
       (_, time, ms, _extra, tz) => `${time}.${(ms || "000")}${tz}`
     );
-    const diff = Date.now() - new Date(normalized).getTime();
-    if (isNaN(diff) || diff < 0) return "";
-    const mins = Math.floor(diff / 60000);
-    if (mins < 1) return "à l'instant";
-    if (mins < 60) return `il y a ${mins}m`;
-    const hrs = Math.floor(mins / 60);
-    if (hrs < 24) return `il y a ${hrs}h`;
-    const days = Math.floor(hrs / 24);
-    return `il y a ${days}j`;
+    return new Date(normalized).toLocaleString("fr-FR", {
+      day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
+    });
   } catch {
     return "";
   }
@@ -74,12 +67,11 @@ function ConversationHistory({ agentType, onSelectConversation, activeConvId, on
               key={conv.id}
               className={`conv-item${activeConvId === conv.id ? " conv-item-active" : ""}`}
               onClick={() => onSelectConversation(conv)}
-              title={conv.title}
+              title={conv.title + (conv.created_at ? " · " + formatShortDate(conv.created_at) : "")}
             >
               <span className="conv-title">
-                {conv.title.length > 30 ? conv.title.slice(0, 30) + "…" : conv.title}
+                {conv.title.length > 32 ? conv.title.slice(0, 32) + "…" : conv.title}
               </span>
-              <span className="conv-timestamp">{relativeTime(conv.last_activity)}</span>
             </li>
           ))}
         </ul>

@@ -301,5 +301,50 @@ class TestAnalyzeLogsEndpointFullPipeline(unittest.TestCase):
         self.assertEqual(body["report"]["no_field_violations"], True)
 
 
+class TestFunctionDocumentationRoute(unittest.TestCase):
+    """Vérifie la route GET /api/v1/functions/{function_name}/doc."""
+
+    def test_get_function_doc_existing(self):
+        """Vérifie le cas d'une fonction existant dans Spec_PowerCARD.xlsx."""
+        from app.main import app
+        from app.services.spec_loader import get_monitored_function_names
+        
+        client = TestClient(app)
+        
+        monitored_names = get_monitored_function_names()
+        self.assertTrue(len(monitored_names) > 0, "Le fichier de spec Excel ne doit pas être vide.")
+        
+        test_func = monitored_names[0]
+        
+        # Désactiver l'appel LLM pour accélérer le test, ou mock
+        with patch("app.services.llm_util.invoke_llm_with_retry") as mock_llm:
+            mock_llm.return_value = MagicMock(content='{"description": "Test Desc", "call_context": "Test Context", "failure_meaning": "Test Failure", "diagnostic_hint": "Test Hint"}')
+            response = client.get(f"/api/v1/functions/{test_func}/doc")
+            
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body.get("found"))
+        self.assertEqual(body.get("function_name"), test_func)
+        self.assertIn("excel_source", body)
+        self.assertIn("excel_path", body)
+        self.assertIn("excel_description", body)
+        self.assertIn("excel_exception", body)
+
+    def test_get_function_doc_undocumented(self):
+        """Vérifie le cas d'une fonction non documentée (ex: swimon_check_msg_id)."""
+        from app.main import app
+        client = TestClient(app)
+        
+        response = client.get("/api/v1/functions/swimon_check_msg_id/doc")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertFalse(body.get("found"))
+        self.assertEqual(body.get("function_name"), "swimon_check_msg_id")
+        self.assertEqual(
+            body.get("message"),
+            "Cette fonction n'est pas documentée dans Spec_PowerCARD.xlsx. Aucune information sur ses conditions d'échec n'est disponible."
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

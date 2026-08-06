@@ -1,7 +1,7 @@
 {
-  "total_input_tokens": 2144320,
-  "total_output_tokens": 541224,
-  "total_tokens": 2685544,
+  "total_input_tokens": 2283667,
+  "total_output_tokens": 570786,
+  "total_tokens": 2854453,
   "history": [
     {
       "timestamp": "2026-07-13T14:54:51.933440",
@@ -1305,6 +1305,46 @@
       "input_tokens": 9738,
       "output_tokens": 1693,
       "total_tokens": 11431
+    },
+    {
+      "timestamp": "2026-08-06T12:24:55.175256",
+      "agent": "ComplianceAuditor",
+      "model": "gemini-3.5-flash",
+      "input_tokens": 9386,
+      "output_tokens": 4460,
+      "total_tokens": 13846
+    },
+    {
+      "timestamp": "2026-08-06T12:27:08.598339",
+      "agent": "ComplianceAuditor",
+      "model": "gemini-3.5-flash",
+      "input_tokens": 9386,
+      "output_tokens": 4460,
+      "total_tokens": 13846
+    },
+    {
+      "timestamp": "2026-08-06T12:28:48.106591",
+      "agent": "ComplianceAuditor",
+      "model": "gemini-3.5-flash",
+      "input_tokens": 101403,
+      "output_tokens": 11522,
+      "total_tokens": 112925
+    },
+    {
+      "timestamp": "2026-08-06T12:34:02.186604",
+      "agent": "ComplianceAuditor",
+      "model": "gemini-3.5-flash",
+      "input_tokens": 9586,
+      "output_tokens": 4560,
+      "total_tokens": 14146
+    },
+    {
+      "timestamp": "2026-08-06T12:55:48.809358",
+      "agent": "ComplianceAuditor",
+      "model": "gemini-3.5-flash",
+      "input_tokens": 9586,
+      "output_tokens": 4560,
+      "total_tokens": 14146
     }
   ]
 }

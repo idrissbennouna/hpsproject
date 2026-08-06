@@ -136,3 +136,40 @@ def delete_conversation(conv_id):
         finally:
             conn.close()
 
+
+def title_exists(agent_type: str, title: str) -> bool:
+    """Retourne True si une conversation avec exactement ce titre existe déjà pour cet agent."""
+    with _LOCK:
+        conn = _get_conn()
+        try:
+            row = conn.execute(
+                "SELECT id FROM conversations WHERE agent_type = ? AND title = ? LIMIT 1",
+                (agent_type, title),
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+
+
+def make_unique_title(agent_type: str, base_title: str, max_len: int = 80) -> str:
+    """
+    Retourne un titre unique pour cet agent_type.
+    Si base_title existe déjà, ajoute un suffixe « · HH:MM » de l'heure courante.
+    Si toujours collision (improbable), ajoute un index numérique.
+    """
+    title = base_title[:max_len]
+    if not title_exists(agent_type, title):
+        return title
+    # 1er essai : suffixe heure courte
+    from datetime import datetime, timezone
+    hhmm = datetime.now(timezone.utc).strftime("%H:%M")
+    title_with_time = f"{base_title} · {hhmm}"[:max_len]
+    if not title_exists(agent_type, title_with_time):
+        return title_with_time
+    # 2ème essai : index numérique croissant
+    for idx in range(2, 100):
+        candidate = f"{base_title} #{idx}"[:max_len]
+        if not title_exists(agent_type, candidate):
+            return candidate
+    return title_with_time  # Fallback absolu
+

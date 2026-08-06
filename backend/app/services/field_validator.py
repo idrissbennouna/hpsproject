@@ -9,7 +9,7 @@ from app.rag.retriever import search_session_chunks_keyword
 FIELDS_EXCLUDED_FROM_STRICT_N = {"52"}
 # Extrait "<longueur> <type>" depuis le texte Attributes du chapitre 4
 # ex: "19 N, 4-bit BCD..." -> longueur=19, type=N ; "40 ANS" -> longueur=40, type=ANS
-ATTR_TYPE_RE = re.compile(r"(\d+)\s+([ANS]{1,3})\b")
+ATTR_TYPE_RE = re.compile(r"(\d+)\s+([ANSB]{1,3})\b")
 
 # ─── Chargement du référentiel ISO 8583 au niveau module ─────────────────────
 # Ce référentiel fait AUTORITÉ sur tout document de session (PDF uploadé).
@@ -21,6 +21,17 @@ try:
             _ISO8583_FIELDS_REF = json.load(_f).get("fields", {})
 except Exception as _e:
     print(f"Warning: Impossible de charger iso8583_field_reference.json dans field_validator: {_e}")
+
+# ─── Chargement du référentiel VIP System (PDF de référence) ─────────────────
+# Ce référentiel fait AUTORITÉ absolue sur tout autre référentiel ou document.
+_VIP_REF_PATH = Path(__file__).resolve().parent.parent / "data" / "vip_system_fields.json"
+_VIP_SYSTEM_FIELDS: dict = {}
+try:
+    if _VIP_REF_PATH.exists():
+        with open(_VIP_REF_PATH, "r", encoding="utf-8") as _f:
+            _VIP_SYSTEM_FIELDS = json.load(_f).get("fields", {})
+except Exception as _e:
+    print(f"Warning: Impossible de charger vip_system_fields.json dans field_validator: {_e}")
 
 STANDARD_ISO_FIELDS = {
     "1": {"name": "Bitmap", "attributes": "16 AN", "source": "Standard ISO 8583"},
@@ -190,9 +201,21 @@ def validate_transaction_fields(all_fields: dict, session_id: str = None) -> lis
         padded = field_number.zfill(3)
         unpadded = field_number.lstrip("0") or "0"
 
-        # ── ÉTAPE A : Référentiel ISO 8583 STANDARD — PRIORITÉ ABSOLUE ──────────
-        # Si le champ est standard, on s'arrête ici. Jamais de lookup RAG/session.
-        if is_standard_field(field_number):
+        # ── ÉTAPE A-0 : Référentiel VIP System (PDF de référence) — PRIORITÉ ABSOLUE ──
+        vip_info = None
+        for key in [field_number, unpadded, padded]:
+            if key in _VIP_SYSTEM_FIELDS:
+                vip_info = _VIP_SYSTEM_FIELDS[key]
+                break
+
+        if vip_info:
+            field_name = vip_info.get("name")
+            attributes = f"{vip_info.get('length')} {vip_info.get('type_code')}"
+            source_file = vip_info.get("source") or "vip-system-BASE-i-tech-specs-volume-1.pdf"
+
+        # ── ÉTAPE A : Référentiel ISO 8583 STANDARD — SECONDAIRE ────────────────
+        # Si le champ n'a pas été résolu par VIP, mais qu'il est standard, on l'utilise
+        elif is_standard_field(field_number):
             std_info = STANDARD_ISO_FIELDS.get(padded) or STANDARD_ISO_FIELDS.get(unpadded)
             if std_info:
                 field_name = std_info.get("name")

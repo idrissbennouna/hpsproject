@@ -636,10 +636,12 @@ async def analyze_logs(
         update_job(active_job_id, stage="done", detail="Analyse et génération terminées avec succès !", progress_pct=100, result=response_data)
 
         # PARTIE A — Sauvegarde automatique de la conversation "logs"
+        # Titre = nom du fichier trace directement (sans préfixe générique).
+        # Anti-collision : si même fichier analysé plusieurs fois, suffixe « · HH:MM ».
         try:
-            from app.services.conversation_history import create_conversation
-            # Titre lisible : "Analyse <nom_du_fichier>" — jamais un libellé générique
-            _conv_title = f"Analyse {safe_filename}"[:80]
+            from app.services.conversation_history import create_conversation, make_unique_title
+            _base_title = safe_filename  # ex: "BASE1_LCH_2.TRC019.TXT"
+            _conv_title = make_unique_title("logs", _base_title)
             create_conversation(
                 agent_type="logs",
                 title=_conv_title,
@@ -737,27 +739,33 @@ async def ask_validation_agent(request: ValidationRequest):
         sources = [s["label"] for s in raw_sources if isinstance(s, dict) and "label" in s] if raw_sources else []
 
         # PARTIE A — Sauvegarde automatique de la conversation "docs"
+        # Titre : priorité au nom de fichier de session, sinon 6-8 premiers mots de la question.
+        # Anti-collision via make_unique_title.
         saved_conv_id = None
         try:
-            from app.services.conversation_history import create_conversation, update_conversation, get_conversation
+            from app.services.conversation_history import create_conversation, update_conversation, get_conversation, make_unique_title
             from app.services.session_storage import get_session_files
-            # Titre lisible : priorité au nom du fichier de session uploadé, sinon début de la question
             _session_files = get_session_files(request.session_id or "")
             if _session_files:
                 _first_file_name = _session_files[0].get("name", "")
-                _conv_title = f"Analyse {_first_file_name}"[:80]
+                _base_title = _first_file_name  # ex: "vip-system-BASE-i-tech-specs-volume-1.pdf"
             else:
-                _question_preview = question[:60] + ("..." if len(question) > 60 else "")
-                _conv_title = _question_preview
+                # 6-8 premiers mots de la question (pas de troncature sur les caractères)
+                _words = question.split()
+                _base_title = " ".join(_words[:8])
+                if len(_words) > 8:
+                    _base_title += "…"
             _all_messages = list(request.chat_history or []) + [
                 {"role": "user", "content": question},
                 {"role": "assistant", "content": final_response, "sources": sources},
             ]
             _cid = request.conv_id
             if _cid and get_conversation(_cid):
-                update_conversation(_cid, title=_conv_title, messages=_all_messages)
+                # Conversation existante : mise à jour sans changer le titre (déjà unique)
+                update_conversation(_cid, messages=_all_messages)
                 saved_conv_id = _cid
             else:
+                _conv_title = make_unique_title("docs", _base_title)
                 _new_conv = create_conversation(
                     agent_type="docs",
                     title=_conv_title,
@@ -1081,18 +1089,39 @@ async def get_function_doc(function_name: str, session_id: Optional[str] = None)
         result = {
             "function_name": safe_name,
             "found": False,
+            "excel_source": None,
+            "excel_path": None,
+            "excel_description": None,
+            "excel_exception": None,
             "llm_structured": None,
             "raw_sources_count": 0,
             "message": (
-                f"Cette fonction n'est pas documentée dans Spec_PowerCARD.xlsx "
-                f"ni dans le PDF de spécification joint. "
-                f"Aucune documentation officielle disponible pour '{safe_name}'."
+                "Cette fonction n'est pas documentée dans Spec_PowerCARD.xlsx. "
+                "Aucune information sur ses conditions d'échec n'est disponible."
             ),
         }
         _FUNC_DOC_CACHE[cache_key] = result
         return result
 
-    # ── ÉTAPE 1 : La fonction EST dans l'Excel — charger sa documentation ──
+    # ── EXTRACTION directe de la colonne Exception Excel (Partie C) ─────────────
+    # Récupère le texte brut de la colonne "Exception" tel que saisit dans le fichier Excel.
+    # C'est la source la plus fiable pour expliquer dans quelles conditions la fonction échoue.
+    _excel_source = ""
+    _excel_path = ""
+    _excel_description = ""
+    _excel_exception = None
+    try:
+        from app.services.spec_loader import load_function_specs
+        _specs = load_function_specs()
+        _spec_entry = _specs.get(safe_name, {})
+        _excel_source = _spec_entry.get("source", "").strip()
+        _excel_path = _spec_entry.get("path", "").strip()
+        _excel_description = _spec_entry.get("description", "").strip()
+        _raw_exception = _spec_entry.get("exception", "").strip()
+        if _raw_exception and _raw_exception.lower() not in ("none", "n/a", "-", ""):
+            _excel_exception = _raw_exception
+    except Exception as _e:
+        print(f"[WARN] get_function_doc Excel exception extraction failed for '{safe_name}': {_e}")
     raw_content_parts = []
 
     # 1a. Documentation Excel directe (source prioritaire, exacte)
@@ -1202,6 +1231,10 @@ async def get_function_doc(function_name: str, session_id: Optional[str] = None)
     result = {
         "function_name": safe_name,
         "found": True,
+        "excel_source": _excel_source,
+        "excel_path": _excel_path,
+        "excel_description": _excel_description,
+        "excel_exception": _excel_exception,  # Colonne "Exception" brute de Spec_PowerCARD.xlsx
         "llm_structured": llm_structured,
         "documentation": [
             {
