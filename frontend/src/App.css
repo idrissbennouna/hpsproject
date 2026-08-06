@@ -135,10 +135,14 @@
 
 /* Main Content Area */
 .main-content {
-  flex-grow: 1;
+  flex: 1 1 auto;
+  min-height: 0;
   padding: 40px 50px;
+  overflow-x: hidden;
   overflow-y: auto;
   box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
 }
 
 .header-row {
@@ -428,30 +432,37 @@
 
 /* --- CHATBOT AGENT 2 STYLES --- */
 .chat-card {
-  height: calc(100vh - 230px);
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
+  justify-content: flex-start;
   padding: 24px;
+  min-height: 0;
+  overflow: hidden;
+  /* Hauteur gérée par .validation-panel ; fallback hors panel */
+  height: calc(100vh - 230px);
 }
 
 .chat-messages-container {
-  flex-grow: 1;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
-  padding: 15px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+  padding: 16px 16px 28px;
   margin-bottom: 16px;
   border: 1px solid rgba(0, 0, 0, 0.04);
   border-radius: 12px;
   background: rgba(248, 250, 252, 0.5);
-  min-height: 0;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  /* IMPORTANT : pas de flex column ici — sinon les messages sont compressés
+     (flex-shrink) et seuls les en-têtes restent visibles */
+  display: block;
 }
 
 .chat-message-row {
   display: flex;
   width: 100%;
+  margin-bottom: 16px;
 }
 
 .chat-message-row.user {
@@ -561,6 +572,36 @@
 /* Page animations */
 .validation-panel {
   animation: slide-in 0.4s ease-out;
+  display: flex;
+  flex-direction: column;
+  /* Hauteur fixe viewport : le scroll se fait UNIQUEMENT dans .chat-messages-container */
+  height: calc(100vh - 100px);
+  max-height: calc(100vh - 100px);
+  min-height: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: 100%;
+}
+
+.validation-panel .header-row {
+  flex-shrink: 0;
+  margin-bottom: 16px;
+}
+
+.validation-panel .chat-card.spec-workspace,
+.validation-panel .chat-card {
+  flex: 1 1 0;
+  height: auto !important;
+  max-height: none;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.validation-panel .chat-input-form,
+.validation-panel .attached-files-row,
+.validation-panel .chat-error {
+  flex-shrink: 0;
 }
 
 /* Typing Indicator */
@@ -598,8 +639,7 @@
 
 /* ── Agent Specs : rendu documentation professionnel ── */
 .spec-workspace .spec-feed {
-  gap: 18px;
-  padding: 18px;
+  padding: 18px 18px 32px;
   background: linear-gradient(180deg, #f1f5f9 0%, #eef2f6 100%);
   border: 1px solid #e2e8f0;
 }
@@ -609,14 +649,17 @@
 }
 
 .spec-answer-card {
+  display: block;
   width: 100%;
   max-width: 860px;
-  align-self: stretch;
+  margin-bottom: 18px;
+  height: auto;
+  max-height: none;
   background: #ffffff;
   border: 1px solid #e2e8f0;
   border-radius: 12px;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.04);
-  overflow: hidden;
+  overflow: visible;
   animation: slide-in 0.22s ease;
 }
 
@@ -627,6 +670,7 @@
   gap: 12px;
   padding: 14px 20px;
   background: linear-gradient(90deg, #0f172a 0%, #1e293b 100%);
+  border-radius: 12px 12px 0 0;
   border-bottom: 1px solid #0f172a;
 }
 
