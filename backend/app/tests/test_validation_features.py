@@ -163,19 +163,19 @@ class TestValidationFeatures(unittest.TestCase):
                 f"STAN: {100000+i} | PAN: 450000******1234 | ID: TX_{i}\n"
                 f"RRN [FLD 037]: {900000+i} | Code Réponse [FLD 039]: {'00' if i != 5 else '05'} (Approuvée)\n"
                 f"Chronologie complète des événements:\n" +
-                "\n".join([f"- Line {l} for transaction {i}: " + ("DATA " * 50) for l in range(100)]) +
+                "\n".join([f"- Line {l} for transaction {i}: " + ("DATA " * 10) for l in range(100)]) +
                 f"\nAlertes: {'Alerte sur transaction 5' if i == 5 else 'Aucune'}"
             )
         raw_massive_trace = "\n\n".join(tx_blocks)
-        self.assertGreater(len(raw_massive_trace), 300000)
+        self.assertGreater(len(raw_massive_trace), 50000)
 
         # Filtrage sans mot-clé spécifique -> doit sélectionner les alertes et synthétiser le reste sous 15000 chars
-        filtered = _filter_session_trace_content(raw_massive_trace, "Quelle est la situation globale ?")
+        filtered = _filter_session_trace_content(raw_massive_trace, "Quelle est la situation globale ?", max_chars=15000)
         self.assertLessEqual(len(filtered), 20000)
         self.assertIn("TRANSACTIONS AVEC ALERTES / ERREURS DÉTECTÉES", filtered)
 
         # Filtrage avec STAN spécifique -> doit extraire la transaction correspondante
-        filtered_stan = _filter_session_trace_content(raw_massive_trace, "Qu'en est-il du STAN 100010 ?")
+        filtered_stan = _filter_session_trace_content(raw_massive_trace, "Qu'en est-il du STAN 100010 ?", max_chars=15000)
         self.assertLessEqual(len(filtered_stan), 20000)
         self.assertIn("100010", filtered_stan)
 

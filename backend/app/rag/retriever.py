@@ -654,20 +654,20 @@ def extract_code_tokens(query: str) -> list:
     # Patterns prioritaires : formulations explicites fr/en
     patterns = [
         # 'code de réponse XX', 'code reponse XX', 'réponse XX', 'reponse XX'
-        r'(?:code\s+de\s+réponse|code\s+de\s+reponse|code\s+reponse|code\s+réponse)\s*(?:est|=|:\s*)?\s*[\'"]?([A-Za-z]{2})[\'"]?',
+        r'(?:code\s+de\s+réponse|code\s+de\s+reponse|code\s+reponse|code\s+réponse)\s*(?:est|=|:\s*)?\s*[\'"]?([A-Za-z]{2})\b[\'"]?',
         # 'réponse (est|:) XX' ou 'réponse XX' standalone
-        r'\bréponse\s+(?:est\s+|:\s*)?[\'"]?([A-Za-z]{2})[\'"]?(?:\b|\d)',
-        r'\breponse\s+(?:est\s+|:\s*)?[\'"]?([A-Za-z]{2})[\'"]?(?:\b|\d)',
+        r'\bréponse\s+(?:est\s+|:\s*)?[\'"]?([A-Za-z]{2})\b[\'"]?',
+        r'\breponse\s+(?:est\s+|:\s*)?[\'"]?([A-Za-z]{2})\b[\'"]?',
         # 'commande dont la réponse est XX'
-        r'commande\s+(?:dont\s+la\s+réponse|dont\s+le\s+code\s+de\s+réponse|source\s+(?:du|de)\s+(?:code|la réponse))\s+(?:est\s+)?[\'"]?([A-Za-z]{2})[\'"]?',
+        r'commande\s+(?:dont\s+la\s+réponse|dont\s+le\s+code\s+de\s+réponse|source\s+(?:du|de)\s+(?:code|la réponse))\s+(?:est\s+)?[\'"]?([A-Za-z]{2})\b[\'"]?',
         # 'commande XX', 'la commande XX', 'code commande XX', 'command XX'
-        r'(?:code\s+)?(?:commande|command|cmd)\s*(?:est|=|:\s*)?\s*[\'"]?([A-Za-z]{2})[\'"]?',
+        r'(?:code\s+)?(?:commande|command|cmd)\s*(?:est|=|:\s*)?\s*[\'"]?([A-Za-z]{2})\b[\'"]?',
         # 'code XX' générique
         r'\bcode\s*[:\s]?[\'"]([A-Za-z]{2})[\'"]',
         # Code en guillemets seul : 'ED' ou "EC"
         r'[\'"]([A-Za-z]{2})[\'"]',
         # XX est le code / XX est la commande / XX est la réponse
-        r'\b([A-Za-z]{2})\s*(?:est\s+le\s+code|est\s+la\s+commande|est\s+le\s+code\s+de\s+réponse|est\s+la\s+réponse)\b',
+        r'\b([A-Za-z]{2})\b\s*(?:est\s+le\s+code|est\s+la\s+commande|est\s+le\s+code\s+de\s+réponse|est\s+la\s+réponse)\b',
     ]
     for pat in patterns:
         for m in re.findall(pat, query, re.IGNORECASE):

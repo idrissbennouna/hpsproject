@@ -1,7 +1,7 @@
 {
-  "total_input_tokens": 1807860,
-  "total_output_tokens": 488098,
-  "total_tokens": 2295958,
+  "total_input_tokens": 2024799,
+  "total_output_tokens": 528994,
+  "total_tokens": 2553793,
   "history": [
     {
       "timestamp": "2026-07-13T14:54:51.933440",
@@ -1209,6 +1209,78 @@
       "input_tokens": 2154,
       "output_tokens": 3655,
       "total_tokens": 5809
+    },
+    {
+      "timestamp": "2026-08-04T16:41:29.161381",
+      "agent": "ComplianceAuditor",
+      "model": "gemini-3.5-flash",
+      "input_tokens": 6267,
+      "output_tokens": 3230,
+      "total_tokens": 9497
+    },
+    {
+      "timestamp": "2026-08-05T19:50:51.291047",
+      "agent": "ComplianceAuditor",
+      "model": "gemini-3.5-flash",
+      "input_tokens": 6612,
+      "output_tokens": 3619,
+      "total_tokens": 10231
+    },
+    {
+      "timestamp": "2026-08-05T20:14:36.590240",
+      "agent": "ComplianceAuditor",
+      "model": "gemini-3.5-flash",
+      "input_tokens": 6757,
+      "output_tokens": 3345,
+      "total_tokens": 10102
+    },
+    {
+      "timestamp": "2026-08-05T20:21:27.856682",
+      "agent": "ComplianceAuditor",
+      "model": "gemini-3.5-flash",
+      "input_tokens": 6757,
+      "output_tokens": 3345,
+      "total_tokens": 10102
+    },
+    {
+      "timestamp": "2026-08-05T22:43:24.489508",
+      "agent": "ComplianceAuditor",
+      "model": "gemini-3.5-flash",
+      "input_tokens": 39251,
+      "output_tokens": 3240,
+      "total_tokens": 42491
+    },
+    {
+      "timestamp": "2026-08-05T22:48:14.995326",
+      "agent": "ComplianceAuditor",
+      "model": "gemini-3.5-flash",
+      "input_tokens": 45073,
+      "output_tokens": 5617,
+      "total_tokens": 50690
+    },
+    {
+      "timestamp": "2026-08-05T22:56:04.604305",
+      "agent": "ComplianceAuditor",
+      "model": "gemini-3.5-flash",
+      "input_tokens": 89412,
+      "output_tokens": 8633,
+      "total_tokens": 98045
+    },
+    {
+      "timestamp": "2026-08-05T23:08:10.093870",
+      "agent": "ComplianceAuditor",
+      "model": "gemini-3.5-flash",
+      "input_tokens": 7580,
+      "output_tokens": 4669,
+      "total_tokens": 12249
+    },
+    {
+      "timestamp": "2026-08-05T23:42:33.055549",
+      "agent": "ComplianceAuditor",
+      "model": "gemini-3.6-flash",
+      "input_tokens": 9230,
+      "output_tokens": 5198,
+      "total_tokens": 14428
     }
   ]
 }

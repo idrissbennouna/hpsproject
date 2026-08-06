@@ -1,3 +1,9 @@
+import sys
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 import io
 import os
 import shutil
@@ -42,7 +48,7 @@ app = FastAPI(
 async def global_exception_handler(request, exc: Exception):
     tb_str = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     logger.error(f"[GLOBAL_EXCEPTION_HANDLER] Unhandled exception occurred at path: {request.url.path}\n{tb_str}")
-    print(f"🔥 [CRITICAL GLOBAL UNHANDLED EXCEPTION] at {request.url.path}:\n{tb_str}")
+    logger.critical(f"[CRITICAL GLOBAL UNHANDLED EXCEPTION] at {request.url.path}:\n{tb_str}")
     return JSONResponse(
         status_code=500,
         content={
@@ -649,11 +655,22 @@ async def analyze_logs(
         update_job(active_job_id, stage="error", detail=f"Erreur agentique : {str(e)}", error=str(e))
         from app.services.llm_util import GeminiOverloadedError, GeminiQuotaExhaustedError
         real_exc = e.__cause__ or e
+        
+        tb_str = traceback.format_exc()
+        logger.critical(f"[CRITICAL GLOBAL UNHANDLED EXCEPTION] at /api/v1/logs/analyze:\n{tb_str}")
+        
         if isinstance(real_exc, GeminiOverloadedError):
             raise HTTPException(status_code=503, detail="Le service Gemini est temporairement surchargé. Veuillez réessayer dans quelques instants.")
         elif isinstance(real_exc, GeminiQuotaExhaustedError):
             raise HTTPException(status_code=429, detail="Le quota de l'API Gemini a été atteint. Veuillez réessayer plus tard.")
-        raise HTTPException(status_code=500, detail=f"Erreur lors de l'analyse agentique : {str(e)}")
+            
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": f"Erreur lors de l'analyse agentique : {str(e)}",
+                "traceback": tb_str
+            }
+        )
 
 
 @app.get("/api/v1/jobs/{job_id}/status")
@@ -1018,6 +1035,11 @@ async def get_function_doc(function_name: str, session_id: Optional[str] = None)
     Retourne la documentation d'une fonction PowerCARD enrichie par LLM (4 sections structurées).
     Utilise un cache mémoire par (function_name, session_id) pour éviter les appels LLM répétés.
 
+    Logique :
+    1. Vérifie d'abord si la fonction est dans Spec_PowerCARD.xlsx (court-circuit).
+       → Si ABSENTE : retourne immédiatement found=False SANS aucun appel RAG ni LLM.
+       → Si PRÉSENTE : charge la doc Excel, optionnellement enrichit via RAG session, puis LLM.
+
     Structure de réponse :
     - found: bool
     - llm_structured: { description, call_context, failure_meaning, diagnostic_hint }
@@ -1034,9 +1056,48 @@ async def get_function_doc(function_name: str, session_id: Optional[str] = None)
     if cache_key in _FUNC_DOC_CACHE:
         return _FUNC_DOC_CACHE[cache_key]
 
+    # ── ÉTAPE 0 : Vérification Excel en premier (court-circuit anti-RAG hors-sujet) ──
+    # Si la fonction n'est PAS dans Spec_PowerCARD.xlsx, on retourne immédiatement
+    # "non documentée" sans aucun appel RAG ni LLM. Cela évite les faux positifs
+    # sémantiques (ex: swimon_check_msg_id qui remontait du contenu sur les MTI/ISO).
+    try:
+        from app.services.spec_loader import get_monitored_function_names, load_function_specs
+        monitored_names = get_monitored_function_names()
+        is_in_excel = safe_name in monitored_names
+    except Exception as e:
+        print(f"[WARN] get_function_doc Excel check failed for '{safe_name}': {e}")
+        is_in_excel = False
+
+    if not is_in_excel:
+        result = {
+            "function_name": safe_name,
+            "found": False,
+            "llm_structured": None,
+            "raw_sources_count": 0,
+            "message": (
+                f"Cette fonction n'est pas documentée dans Spec_PowerCARD.xlsx "
+                f"ni dans le PDF de spécification joint. "
+                f"Aucune documentation officielle disponible pour '{safe_name}'."
+            ),
+        }
+        _FUNC_DOC_CACHE[cache_key] = result
+        return result
+
+    # ── ÉTAPE 1 : La fonction EST dans l'Excel — charger sa documentation ──
     raw_content_parts = []
 
-    # 1. Interrogation du document de session (RAG vectoriel) si session_id fourni
+    # 1a. Documentation Excel directe (source prioritaire, exacte)
+    try:
+        from app.services.spec_loader import get_spec_context_for_functions
+        excel_doc = get_spec_context_for_functions([safe_name])
+        if excel_doc and excel_doc.strip():
+            raw_content_parts.append(f"[Spec_PowerCARD.xlsx]\n{excel_doc.strip()}")
+    except Exception as e:
+        print(f"[WARN] get_function_doc Excel spec context failed for '{safe_name}': {e}")
+
+    # 1b. Recherche RAG dans le document de session (seulement si la fonction est documentée)
+    # Cette recherche est pertinente ici car on cherche des infos sur une fonction
+    # CONFIRMÉE dans le référentiel — le RAG peut apporter du contexte PDF complémentaire.
     if session_id and session_id.strip():
         try:
             from app.rag.retriever import get_session_vectorstore
@@ -1057,16 +1118,18 @@ async def get_function_doc(function_name: str, session_id: Optional[str] = None)
         except Exception as e:
             print(f"[WARN] get_function_doc session RAG failed for '{safe_name}': {e}")
 
-    # 2. Fallback : Spec_PowerCARD.xlsx
-    try:
-        from app.rag.retriever import _local_excel_fallback
-        excel_result = await run_in_threadpool(_local_excel_fallback, safe_name, 3)
-        if excel_result and excel_result.strip():
-            raw_content_parts.append(f"[Spec_PowerCARD.xlsx]\n{excel_result.strip()}")
-    except Exception as e:
-        print(f"[WARN] get_function_doc Excel fallback failed for '{safe_name}': {e}")
+    # Cas de secours : Excel trouvé dans monitored_names mais get_spec_context_for_functions
+    # n'a rien retourné — on tente le fallback de recherche textuelle Excel
+    if not raw_content_parts:
+        try:
+            from app.rag.retriever import _local_excel_fallback
+            excel_result = await run_in_threadpool(_local_excel_fallback, safe_name, 3)
+            if excel_result and excel_result.strip():
+                raw_content_parts.append(f"[Spec_PowerCARD.xlsx]\n{excel_result.strip()}")
+        except Exception as e:
+            print(f"[WARN] get_function_doc Excel fallback failed for '{safe_name}': {e}")
 
-    # Cas : aucune documentation trouvée
+    # Cas improbable : fonction dans l'Excel mais aucun contenu récupéré
     if not raw_content_parts:
         result = {
             "function_name": safe_name,

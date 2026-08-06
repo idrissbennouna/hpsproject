@@ -158,11 +158,18 @@ def _add_event(tx: dict, text: str, line_num: Optional[int] = None, timestamp: O
 
 def _merge_request_response_pairs(all_transactions: list) -> list:
     """
-    Fusionne les fragments orphelins (ex: réponse 1110) avec la transaction primaire
-    en s'appuyant sur le RRN.
+    Deux passes de fusion :
+    Passe A — Fusionne les fragments orphelins (sans STAN/transaction_id mais avec RRN)
+               dans leur transaction primaire correspondante, en s'appuyant sur le RRN.
+    Passe B — Fusionne les doublons de STAN : quand un même fichier contient plusieurs
+               occurrences d'une transaction avec le même STAN (re-tentatives, multi-sessions),
+               agrège failed_functions, alerts_found et successful_functions dans une seule
+               entrée (la première apparition) pour ne pas perdre les fonctions en échec
+               détectées dans les occurrences suivantes.
     """
     indexed = list(enumerate(all_transactions))
 
+    # --- Passe A : Fusion des fragments orphelins par RRN ---
     primaries_by_rrn = {}
     for idx, tx in indexed:
         rrn = tx["identifiers"].get("rrn")
@@ -190,25 +197,65 @@ def _merge_request_response_pairs(all_transactions: list) -> list:
         primary_idx, primary = primary_entry
         for field_num, field_val in tx["all_fields"].items():
             primary["all_fields"].setdefault(field_num, field_val)
-        for alert in tx["alerts_found"]:
+        for alert in tx.get("alerts_found", []):
             if alert not in primary["alerts_found"]:
                 primary["alerts_found"].append(alert)
         if not primary["identifiers"].get("response_code") and tx["identifiers"].get("response_code"):
             primary["identifiers"]["response_code"] = tx["identifiers"]["response_code"]
-        for func in tx["failed_functions"]:
+        for func in tx.get("failed_functions", []):
             if func not in primary["failed_functions"]:
                 primary["failed_functions"].append(func)
-        for func in tx["successful_functions"]:
+        for func in tx.get("successful_functions", []):
             if func not in primary["successful_functions"]:
                 primary["successful_functions"].append(func)
         for hsm in tx.get("hsm_calls", []):
             if hsm not in primary.get("hsm_calls", []):
                 primary.setdefault("hsm_calls", []).append(hsm)
+        # Fusionner la chronologie du fragment orphelin dans la transaction primaire
+        if tx.get("chronology"):
+            primary["chronology"] = (primary.get("chronology", "") + "\n" + tx["chronology"]).strip()
 
-            else:
-                primary["chronology"] = (primary["chronology"] + "\n" + tx["chronology"]).strip()
+    # --- Passe B : Fusion des doublons par STAN ---
+    # Quand plusieurs transactions ont le même STAN (re-tentatives, multi-sessions),
+    # on agrège toutes leurs données dans la première occurrence trouvée.
+    primary_by_stan: dict = {}
+    deduped: list = []
+    for tx in final:
+        stan = tx["identifiers"].get("stan")
+        if not stan:
+            # Sans STAN : pas de déduplication possible, on conserve
+            deduped.append(tx)
+            continue
 
-    return final
+        if stan not in primary_by_stan:
+            # Première occurrence de ce STAN : c'est la transaction primaire
+            primary_by_stan[stan] = tx
+            deduped.append(tx)
+        else:
+            # Occurrence suivante : fusionner dans la primaire
+            primary = primary_by_stan[stan]
+            for func in tx.get("failed_functions", []):
+                if func not in primary["failed_functions"]:
+                    primary["failed_functions"].append(func)
+            for func in tx.get("successful_functions", []):
+                if func not in primary["successful_functions"]:
+                    primary["successful_functions"].append(func)
+            for alert in tx.get("alerts_found", []):
+                if alert not in primary["alerts_found"]:
+                    primary["alerts_found"].append(alert)
+            for field_num, field_val in tx.get("all_fields", {}).items():
+                primary["all_fields"].setdefault(field_num, field_val)
+            if not primary["identifiers"].get("rrn") and tx["identifiers"].get("rrn"):
+                primary["identifiers"]["rrn"] = tx["identifiers"]["rrn"]
+            if not primary["identifiers"].get("response_code") and tx["identifiers"].get("response_code"):
+                primary["identifiers"]["response_code"] = tx["identifiers"]["response_code"]
+            for hsm in tx.get("hsm_calls", []):
+                if hsm not in primary.get("hsm_calls", []):
+                    primary.setdefault("hsm_calls", []).append(hsm)
+            if tx.get("chronology"):
+                primary["chronology"] = (primary.get("chronology", "") + "\n" + tx["chronology"]).strip()
+
+    return deduped
 
 
 class ParsedTransactionList(list):
@@ -256,7 +303,7 @@ def parse_trace_file(
         is_hb = bool(tx.get("is_heartbeat"))
 
         idents = tx["identifiers"]
-        if not idents.get("stan") and not idents.get("transaction_id") and not idents.get("rrn") and not idents.get("pan"):
+        if not is_hb and not idents.get("stan") and not idents.get("transaction_id") and not idents.get("rrn") and not idents.get("pan"):
             return
 
         stan = tx["identifiers"]["stan"]
@@ -286,6 +333,7 @@ def parse_trace_file(
             "all_fields": tx["all_fields"].copy(),
             "chronology": "\n".join(f"- {ev}" for ev in tx["events"]),
             "alerts_found": list(tx["alerts"]),
+            "format_alerts": format_alerts,
             "failed_functions": list(tx["failed_functions"]),
             "successful_functions": list(tx["successful_functions"]),
             "hsm_calls": list(tx.get("hsm_calls", [])),
@@ -490,9 +538,19 @@ def parse_trace_file(
                     enriched_event_added = True
 
                 # Surveillance fonctions métier (liste Excel)
+                # Deux passes distinctes :
+                #   Passe 1 — fonctions surveillées (Excel) : pattern d'échec ou trace de succès
+                #   Passe 2 — détection générique, TOUJOURS exécutée (indépendamment de la passe 1)
+                #             pour capturer les fonctions absentes de l'Excel sur la même ligne
                 monitored_functions = get_monitored_function_names(spec_path)
-                matched_known_func = False
+
+                # --- Passe 1 : fonctions Excel documentées ---
+                # Ensemble des fonctions déjà identifiées en échec par le pattern Excel
+                # (utilisé en passe 2 pour éviter les doublons d'alerte)
+                excel_failed_funcs = set()
+
                 for func_name in monitored_functions:
+                    # Recherche insensible à la casse pour robustesse (espaces multiples, etc.)
                     if func_name not in line:
                         continue
 
@@ -512,8 +570,7 @@ def parse_trace_file(
                             tx["alerts"].append(anomalie)
                         if func_name not in tx["failed_functions"]:
                             tx["failed_functions"].append(func_name)
-                        matched_known_func = True
-                        break
+                        excel_failed_funcs.add(func_name)
                     elif any(w in line for w in ("End", "Exit", "Return", "END", "EXIT")):
                         res_match = re.search(rf"{re.escape(func_name)}\s*\(\s*([^)]*)\)", line)
                         res_str = res_match.group(1).strip() if res_match and res_match.group(1) else "OK"
@@ -525,38 +582,45 @@ def parse_trace_file(
                         enriched_event_added = True
                         if func_name not in tx["successful_functions"]:
                             tx["successful_functions"].append(func_name)
-                        matched_known_func = True
-                        break
 
-                # Détection générique : fonctions en échec non répertoriées dans l'Excel
-                if not matched_known_func:
-                    for gen_match in RE_GENERIC_FAILURE.finditer(line):
-                        generic_func = gen_match.group("func")
-                        generic_code = gen_match.group("fail")
+                # --- Passe 2 : détection générique (toujours exécutée) ---
+                # Capture les fonctions en échec NON présentes dans l'Excel (ex: GetTimers absent
+                # de Spec_PowerCARD.xlsx, swimon_check_msg_id, etc.) ainsi que les fonctions Excel
+                # dont le pattern n'a pas matché mais que RE_GENERIC_FAILURE détecte quand même.
+                GENERIC_BLACKLIST = {"END", "START", "FLD", "MTI", "PAN", "STAN", "RRN", "FROM", "TO", "HSM", "LEVEL"}
+                for gen_match in RE_GENERIC_FAILURE.finditer(line):
+                    generic_func = gen_match.group("func")
+                    generic_code = gen_match.group("fail")
 
-                        if generic_func.upper() in {"END", "START", "FLD", "MTI", "PAN", "STAN", "RRN", "FROM", "TO", "HSM", "LEVEL"}:
-                            continue
+                    if generic_func.upper() in GENERIC_BLACKLIST:
+                        continue
 
-                        is_monitored = generic_func in monitored_functions
+                    # Ne pas dupliquer une alerte déjà émise par la passe Excel
+                    if generic_func in excel_failed_funcs:
+                        continue
 
-                        if is_monitored:
-                            anomalie_text = f"{generic_func}() a échoué (résultat : {generic_code})."
-                        else:
-                            anomalie_text = (
-                                f"{generic_func}() a échoué (résultat : {generic_code})"
-                                " — fonction non documentée dans Spec_PowerCARD.xlsx."
-                            )
+                    is_monitored = generic_func in monitored_functions
 
-                        _add_event(
-                            tx,
-                            f"{prefix_str}ALERTE : {anomalie_text}",
-                            line_num=line_idx, timestamp=timestamp, level=level
+                    if is_monitored:
+                        # Fonction Excel dont le pattern spécifique n'a pas matché mais
+                        # RE_GENERIC_FAILURE la détecte quand même : la signaler comme documentée
+                        anomalie_text = f"{generic_func}() a échoué (résultat : {generic_code})."
+                    else:
+                        anomalie_text = (
+                            f"{generic_func}() a échoué (résultat : {generic_code})"
+                            " — fonction non documentée dans Spec_PowerCARD.xlsx."
                         )
-                        enriched_event_added = True
-                        if anomalie_text not in tx["alerts"]:
-                            tx["alerts"].append(anomalie_text)
-                        if generic_func not in tx["failed_functions"]:
-                            tx["failed_functions"].append(generic_func)
+
+                    _add_event(
+                        tx,
+                        f"{prefix_str}ALERTE : {anomalie_text}",
+                        line_num=line_idx, timestamp=timestamp, level=level
+                    )
+                    enriched_event_added = True
+                    if anomalie_text not in tx["alerts"]:
+                        tx["alerts"].append(anomalie_text)
+                    if generic_func not in tx["failed_functions"]:
+                        tx["failed_functions"].append(generic_func)
 
                 # Mode "full" : capture également toute ligne non enrichie
                 if mode == "full" and not enriched_event_added and message:

@@ -85,16 +85,14 @@ def _filter_session_trace_content(raw_content: str, question: str, max_chars: in
         "ET", "OU", "DE", "LE", "LA", "DU", "AU", "UN", "EN", "SI", "NO",
         "CE", "CI", "SA", "SES", "SON", "EST", "PAS", "QUE", "QUI", "PAR",
         "SUR", "DES", "NE", "ON", "IL", "SE", "MA", "TA", "TE", "ME",
-        "AVEC", "DANS", "POUR", "CETTE", "QUEL", "SONT", "LES", "PLUS",
-        "COMMENT", "FIELD", "TRANSACTION"
+        "AVEC", "DANS", "POUR", "CETTE", "QUEL", "QUELLE", "SONT", "LES", "PLUS",
+        "COMMENT", "FIELD", "TRANSACTION", "STAN", "PAN", "RRN", "MTI", "CODE", "RESPONSE",
+        "QU"
     }
     code_tokens_extended = [t for t in extended_tokens if t not in stopwords_ext]
 
     q_lower = question.lower()
-    stopwords = {
-        "avec", "dans", "pour", "cette", "quel", "quelle", "sont", "les", "des",
-        "plus", "comment", "field", "transaction"
-    }
+    stopwords = {w.lower() for w in stopwords_ext}
     q_tokens = [w for w in re.findall(r"\w+", q_lower) if len(w) >= 2 and w not in stopwords]
     # Union de tous les termes de recherche
     all_search_terms = list(set(code_tokens_2l + code_tokens_extended + [t.upper() for t in q_tokens]))
@@ -113,35 +111,71 @@ def _filter_session_trace_content(raw_content: str, question: str, max_chars: in
             other_blocks.append(blk)
 
     # Assemblage ordonné des blocs sans jamais couper une transaction
-    selected_blocks = []
+    selected_relevant = []
+    selected_alerts = []
+    selected_other = []
     seen_indices = set()
-    current_len = len(header) + 100 if header else 0
+    current_len = len(header) + 200 if header else 0
 
-    ordered_candidates = relevant_blocks + alert_blocks + other_blocks
-    for blk in ordered_candidates:
-        # Extraire le numéro de transaction pour éviter les doublons
+    # Blocs pertinents
+    for blk in relevant_blocks:
         m = re.search(r"=== Transaction (\d+)", blk)
         tx_idx = m.group(1) if m else blk[:30]
         if tx_idx in seen_indices:
             continue
-
         if current_len + len(blk) + 4 <= max_chars:
-            selected_blocks.append(blk)
+            selected_relevant.append(blk)
             seen_indices.add(tx_idx)
             current_len += len(blk) + 4
-        elif relevant_blocks and blk in relevant_blocks and len(selected_blocks) == 0:
-            # Si même le 1er bloc pertinent dépasse max_chars, on inclut au moins ce 1er bloc entier pour ne pas le rater
-            selected_blocks.append(blk)
+        elif len(selected_relevant) == 0:
+            selected_relevant.append(blk)
             seen_indices.add(tx_idx)
             current_len += len(blk) + 4
             break
 
-    included_count = len(selected_blocks)
+    # Blocs avec alertes
+    for blk in alert_blocks:
+        m = re.search(r"=== Transaction (\d+)", blk)
+        tx_idx = m.group(1) if m else blk[:30]
+        if tx_idx in seen_indices:
+            continue
+        if current_len + len(blk) + 4 <= max_chars:
+            selected_alerts.append(blk)
+            seen_indices.add(tx_idx)
+            current_len += len(blk) + 4
+        elif len(selected_relevant) == 0 and len(selected_alerts) == 0:
+            selected_alerts.append(blk)
+            seen_indices.add(tx_idx)
+            current_len += len(blk) + 4
+            break
+
+    # Autres blocs
+    for blk in other_blocks:
+        m = re.search(r"=== Transaction (\d+)", blk)
+        tx_idx = m.group(1) if m else blk[:30]
+        if tx_idx in seen_indices:
+            continue
+        if current_len + len(blk) + 4 <= max_chars:
+            selected_other.append(blk)
+            seen_indices.add(tx_idx)
+            current_len += len(blk) + 4
+        elif len(selected_relevant) == 0 and len(selected_alerts) == 0 and len(selected_other) == 0:
+            selected_other.append(blk)
+            seen_indices.add(tx_idx)
+            current_len += len(blk) + 4
+            break
+
+    included_count = len(selected_relevant) + len(selected_alerts) + len(selected_other)
     result_parts = []
     if header:
         result_parts.append(header)
 
-    result_parts.extend(selected_blocks)
+    if selected_relevant:
+        result_parts.append("=== TRANSACTIONS RECHERCHÉES / PERTINENTES ===\n" + "\n\n".join(selected_relevant))
+    if selected_alerts:
+        result_parts.append("=== TRANSACTIONS AVEC ALERTES / ERREURS DÉTECTÉES ===\n" + "\n\n".join(selected_alerts))
+    if selected_other:
+        result_parts.append("=== AUTRES TRANSACTIONS DE LA TRACE ===\n" + "\n\n".join(selected_other))
 
     if included_count < total_tx:
         result_parts.append(
