@@ -142,3 +142,56 @@ class TestLogParser(unittest.TestCase):
         # Vérifier que le heartbeat a bien été comptabilisé séparément
         self.assertEqual(transactions.heartbeat_count, 1)
 
+    def test_get_original_auth_data_resultat_minus_one_generates_alert(self):
+        """
+        GetOriginalAuthData() : résultat -1 doit générer une alerte + failed_functions,
+        même si le format n'est pas 'NOK (-1)' littéral.
+        """
+        log_content = (
+            "2026-07-28 12:00:00.000 0001 SESS_GOA_001|4| - M.T.I : [1100]\n"
+            "2026-07-28 12:00:00.001 0001 SESS_GOA_001|4| INTERNAL STAN} 6 111222\n"
+            "2026-07-28 12:00:00.002 0001 SESS_GOA_001|4| PAN} 16 4000123456789010\n"
+            "2026-07-28 12:00:00.003 0001 SESS_GOA_001|4| - FLD (037) : (12) : [601355414052]\n"
+            "2026-07-28 12:00:00.010 0001 SESS_GOA_001|4| GetOriginalAuthData() : résultat -1\n"
+            "2026-07-28 12:00:00.020 0001 SESS_GOA_001|4| CardInSaf () (NOK)\n"
+            "2026-07-28 12:00:00.030 0001 SESS_GOA_001|4| - FLD (039) : (2) : [05]\n"
+        )
+        file_path = self._create_temp_log(log_content)
+        transactions = parse_trace_file(file_path)
+        self.assertEqual(len(transactions), 1)
+        tx = transactions[0]
+
+        self.assertIn("GetOriginalAuthData", tx["failed_functions"])
+        self.assertIn("CardInSaf", tx["failed_functions"])
+        self.assertEqual(len(tx["failed_functions"]), 2)
+
+        alerts = tx["alerts_found"]
+        self.assertTrue(any("GetOriginalAuthData" in a for a in alerts), alerts)
+        self.assertTrue(any("CardInSaf" in a for a in alerts), alerts)
+        # Cohérence : autant d'alertes couvrant les fonctions en échec que de failed_functions
+        covered = {
+            fn for fn in tx["failed_functions"]
+            if any(fn in a for a in alerts)
+        }
+        self.assertEqual(covered, set(tx["failed_functions"]))
+
+
+class TestFailureRegexFormats(unittest.TestCase):
+    def test_resultat_minus_one_formats(self):
+        from app.services.log_parser import RE_GENERIC_FAILURE, _build_function_failure_patterns
+
+        patterns = _build_function_failure_patterns()
+        p = patterns["GetOriginalAuthData"]
+        samples = [
+            "GetOriginalAuthData() : résultat -1",
+            "GetOriginalAuthData() : resultat -1.",
+            "GetOriginalAuthData() result=-1",
+            "GetOriginalAuthData (-1)",
+            "GetOriginalAuthData() NOK (-1)",
+        ]
+        for s in samples:
+            self.assertTrue(
+                p.search(s) or RE_GENERIC_FAILURE.search(s),
+                msg=f"Échec non détecté pour: {s!r}",
+            )
+

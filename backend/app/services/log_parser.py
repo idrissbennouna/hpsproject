@@ -64,12 +64,27 @@ RE_MTI = re.compile(r"M\.T\.I\s*:\s*\[?(\d{4})\]?")
 HEARTBEAT_MTIS = {"0800", "0810"}
 
 # Détection générique des fonctions en échec non documentées dans l'Excel
-# Capture : NomFonction ... NOK | ( NOK ) | (-1) | ( -1 ) | NOK (-1) | != OK
+# Capture : NomFonction ... NOK | ( NOK ) | (-1) | résultat -1 | result=-1 | != OK
+_FAIL_TOKEN = (
+    r"(?:"
+    r"NOK\s*\(\s*-\d+\s*\)|"
+    r"NOK|"
+    r"\(\s*NOK\s*\)|"
+    r"\(\s*-\d+\s*\)|"
+    r"!=\s*OK|"
+    r"!=\s*0|"
+    r"ERROR|"
+    r"(?:r[ée]sultat|result(?:at)?|returned|return(?:ed|s)?|code)"
+    r"\s*[=:]?\s*-+\s*[1-9]\d*|"
+    r"=\s*-+\s*[1-9]\d*"
+    r")"
+)
 RE_GENERIC_FAILURE = re.compile(
-    r"\b(?P<func>[A-Za-z][A-Za-z0-9_]{2,})\b"
-    r"(?:\s*\(\s*\))?"
-    r"\s*(?P<fail>NOK\s*\(\s*-\d+\s*\)|NOK|\(\s*NOK\s*\)|\(\s*-\d+\s*\)|!=\s*OK|!=\s*0|ERROR)",
-    re.IGNORECASE
+    rf"\b(?P<func>[A-Za-z][A-Za-z0-9_]{{2,}})\b"
+    rf"(?:\s*\(\s*\))?"
+    rf"\s*(?::\s*)?"
+    rf"(?P<fail>{_FAIL_TOKEN})",
+    re.IGNORECASE,
 )
 
 
@@ -77,10 +92,39 @@ def _build_function_failure_patterns(spec_path: Optional[str] = None) -> Dict[st
     patterns = {}
     for func in get_monitored_function_names(spec_path):
         patterns[func] = re.compile(
-            rf"\b{re.escape(func)}\b(?:\s*\(\s*\))?\s*(?P<fail>NOK\s*\(\s*-\d+\s*\)|NOK|\(\s*NOK\s*\)|\(\s*-\d+\s*\)|!=\s*OK|!=\s*0|ERROR)",
-            re.IGNORECASE
+            rf"\b{re.escape(func)}\b(?:\s*\(\s*\))?\s*(?::\s*)?(?P<fail>{_FAIL_TOKEN})",
+            re.IGNORECASE,
         )
     return patterns
+
+
+def _line_has_success_marker(line: str) -> bool:
+    return any(w in line for w in ("End", "Exit", "Return", "END", "EXIT"))
+
+
+def _line_looks_like_failure_near_func(line: str, func_name: str) -> Optional[str]:
+    """
+    Détection souple d'un code retour négatif / NOK près d'une fonction,
+    pour les formats non couverts par le pattern principal
+    (ex: 'GetOriginalAuthData() returned -1').
+    """
+    if func_name not in line:
+        return None
+    # Fenêtre locale autour du nom de fonction pour limiter les faux positifs
+    idx = line.find(func_name)
+    window = line[idx : idx + len(func_name) + 80]
+    m = re.search(
+        rf"(?:{_FAIL_TOKEN})",
+        window,
+        re.IGNORECASE,
+    )
+    if m:
+        return m.group(0)
+    # Fallback : -1 / -2 isolé après la fonction (sans mot-clé résultat)
+    m2 = re.search(r"(?<![0-9])-+\s*([1-9]\d*)\b", window)
+    if m2:
+        return f"-{m2.group(1)}"
+    return None
 
 
 def _parse_line_components(line: str) -> Optional[Dict[str, Any]]:
@@ -556,9 +600,14 @@ def parse_trace_file(
 
                     pattern = function_patterns.get(func_name)
                     match_fail = pattern.search(line) if pattern else None
+                    soft_fail_code = None if match_fail else _line_looks_like_failure_near_func(line, func_name)
 
-                    if match_fail:
-                        code = match_fail.group("fail") if "fail" in match_fail.groupdict() else match_fail.group(1)
+                    if match_fail or soft_fail_code:
+                        code = (
+                            match_fail.group("fail")
+                            if match_fail and "fail" in match_fail.groupdict()
+                            else (match_fail.group(1) if match_fail else soft_fail_code)
+                        )
                         anomalie = f"{func_name}() a échoué (résultat : {code})."
                         _add_event(
                             tx,
@@ -571,7 +620,10 @@ def parse_trace_file(
                         if func_name not in tx["failed_functions"]:
                             tx["failed_functions"].append(func_name)
                         excel_failed_funcs.add(func_name)
-                    elif any(w in line for w in ("End", "Exit", "Return", "END", "EXIT")):
+                    elif _line_has_success_marker(line):
+                        # Ne jamais classer en succès si un code négatif/NOK est présent sur la ligne
+                        if _line_looks_like_failure_near_func(line, func_name):
+                            continue
                         res_match = re.search(rf"{re.escape(func_name)}\s*\(\s*([^)]*)\)", line)
                         res_str = res_match.group(1).strip() if res_match and res_match.group(1) else "OK"
                         _add_event(

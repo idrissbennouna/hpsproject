@@ -378,6 +378,7 @@ class TestEnrichReportWithParserData(unittest.TestCase):
         self.assertEqual(tx["failed_functions"], ["GetAuthRouting"])
         self.assertEqual(tx["processing_code"], "000000")
         self.assertIn("GetAuthRouting", tx["pistes_diagnostiques"])
+        self.assertTrue(any("GetAuthRouting" in a for a in tx["alerts"]))
 
     def test_merges_without_duplicates(self):
         from app.core.agent_graph import _enrich_report_with_parser_data
@@ -398,6 +399,78 @@ class TestEnrichReportWithParserData(unittest.TestCase):
             enriched["transactions"][0]["failed_functions"],
             ["AuthProcess", "GetAuthRouting"],
         )
+
+    def test_syncs_alerts_for_each_failed_function(self):
+        """Chaque failed_function doit avoir une alerte dédiée (bug GetOriginalAuthData)."""
+        from app.core.agent_graph import _enrich_report_with_parser_data
+
+        report = {
+            "transactions": [
+                {
+                    "rrn": "601355414052",
+                    "alerts": ["CardInSaf() a échoué (résultat : NOK)."],
+                    "failed_functions": ["CardInSaf"],
+                    "chronology": [
+                        "Exécution de GetOriginalAuthData() : résultat -1.",
+                        "Échec de la fonction CardInSaf () (NOK).",
+                    ],
+                }
+            ],
+        }
+        log_data = json.dumps([
+            {
+                "rrn": "601355414052",
+                "failed_functions": ["GetOriginalAuthData", "CardInSaf"],
+                "alerts_found": [
+                    "GetOriginalAuthData() a échoué (résultat : résultat -1).",
+                    "CardInSaf() a échoué (résultat : (NOK)).",
+                ],
+            }
+        ])
+        enriched = _enrich_report_with_parser_data(report, log_data)
+        tx = enriched["transactions"][0]
+        self.assertEqual(
+            set(tx["failed_functions"]),
+            {"GetOriginalAuthData", "CardInSaf"},
+        )
+        self.assertTrue(any("GetOriginalAuthData" in a for a in tx["alerts"]))
+        self.assertTrue(any("CardInSaf" in a for a in tx["alerts"]))
+        # Compteurs cohérents : 2 fonctions en échec ↔ alertes couvrant les 2
+        covered = {
+            fn for fn in tx["failed_functions"]
+            if any(fn in a for a in tx["alerts"])
+        }
+        self.assertEqual(covered, set(tx["failed_functions"]))
+
+    def test_chronology_resultat_minus_one_adds_to_failed_functions(self):
+        """Même si le parser omet GetOriginalAuthData, la chronologie LLM doit le remonter."""
+        from app.core.agent_graph import _enrich_report_with_parser_data
+
+        report = {
+            "transactions": [
+                {
+                    "rrn": "03mCReJcH440",
+                    "failed_functions": ["Pin", "Get_IssScriptData", "gen_iss_script_data"],
+                    "alerts": ["Pin() a échoué."],
+                    "chronology": [
+                        "Exécution de GetOriginalAuthData() : résultat -1.",
+                        "Échec de Pin (NOK).",
+                    ],
+                }
+            ],
+        }
+        # log_data vide / sans GetOriginalAuthData → extraction chronologie seule
+        log_data = json.dumps([
+            {
+                "rrn": "03mCReJcH440",
+                "failed_functions": ["Pin", "Get_IssScriptData", "gen_iss_script_data"],
+                "alerts_found": ["Pin() a échoué."],
+            }
+        ])
+        enriched = _enrich_report_with_parser_data(report, log_data)
+        tx = enriched["transactions"][0]
+        self.assertIn("GetOriginalAuthData", tx["failed_functions"])
+        self.assertTrue(any("GetOriginalAuthData" in a for a in tx["alerts"]))
 
 
 if __name__ == "__main__":

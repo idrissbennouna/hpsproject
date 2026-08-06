@@ -80,6 +80,48 @@ def _tx_match_key(tx: dict) -> str:
     return ""
 
 
+_CHRONO_FAIL_FUNC_RE = re.compile(
+    r"(?:"
+    r"\b([A-Za-z][A-Za-z0-9_]{2,})\s*\(\s*\)|"
+    r"(?:fonction|ex[ée]cution de|appel(?:\s+de)?)\s+([A-Za-z][A-Za-z0-9_]{2,})|"
+    r"\b([A-Za-z][A-Za-z0-9_]{2,})\s*:\s*r[ée]sultat"
+    r")",
+    re.IGNORECASE,
+)
+_CHRONO_ERROR_RE = re.compile(
+    r"\b(nok|échec|echec|error|failed|refuse)\b|-\s*[1-9]\d*|r[ée]sultat\s*-",
+    re.IGNORECASE,
+)
+
+
+def _extract_failed_funcs_from_chronology(chronology) -> list:
+    """Déduit les fonctions en échec depuis les étapes de chronologie LLM/parser."""
+    if isinstance(chronology, str):
+        steps = [s.strip(" -•\t") for s in chronology.splitlines() if s.strip()]
+    elif isinstance(chronology, list):
+        steps = [str(s).strip() for s in chronology if str(s).strip()]
+    else:
+        return []
+
+    found = []
+    seen = set()
+    for step in steps:
+        if not _CHRONO_ERROR_RE.search(step):
+            continue
+        m = _CHRONO_FAIL_FUNC_RE.search(step)
+        if not m:
+            continue
+        name = next((g for g in m.groups() if g), None)
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(name)
+    return found
+
+
 def _enrich_report_with_parser_data(report: dict, log_data_json: str) -> dict:
     """
     Réinjecte failed_functions (et champs utiles) depuis le parser dans le rapport LLM.
@@ -96,8 +138,8 @@ def _enrich_report_with_parser_data(report: dict, log_data_json: str) -> dict:
     except Exception:
         parsed_txs = []
 
-    if not isinstance(parsed_txs, list) or not parsed_txs:
-        return report
+    if not isinstance(parsed_txs, list):
+        parsed_txs = []
 
     by_key = {}
     for ptx in parsed_txs:
@@ -119,10 +161,8 @@ def _enrich_report_with_parser_data(report: dict, log_data_json: str) -> dict:
         # Fallback positionnel si RRN/STAN absents côté LLM
         if src is None and idx < len(parsed_txs) and isinstance(parsed_txs[idx], dict):
             src = parsed_txs[idx]
-        if not src:
-            continue
 
-        parser_failed = src.get("failed_functions") or []
+        parser_failed = (src or {}).get("failed_functions") or []
         if not isinstance(parser_failed, list):
             parser_failed = []
 
@@ -130,16 +170,36 @@ def _enrich_report_with_parser_data(report: dict, log_data_json: str) -> dict:
         if not isinstance(existing, list):
             existing = []
 
-        # Union ordonnée : parser d'abord (source de vérité), puis éventuels ajouts LLM
+        chrono_failed = _extract_failed_funcs_from_chronology(rtx.get("chronology"))
+
+        # Union ordonnée : parser → chronologie → LLM
         merged = []
-        for fn in list(parser_failed) + list(existing):
+        for fn in list(parser_failed) + list(chrono_failed) + list(existing):
             name = str(fn).strip() if fn is not None else ""
             if name and name not in merged:
                 merged.append(name)
         rtx["failed_functions"] = merged
 
-        if not rtx.get("processing_code") and src.get("processing_code"):
+        if src and not rtx.get("processing_code") and src.get("processing_code"):
             rtx["processing_code"] = src.get("processing_code")
+
+        # Synchroniser alerts ↔ failed_functions
+        parser_alerts = (src or {}).get("alerts_found") or (src or {}).get("alerts") or []
+        if not isinstance(parser_alerts, list):
+            parser_alerts = []
+        existing_alerts = rtx.get("alerts")
+        if not isinstance(existing_alerts, list):
+            existing_alerts = []
+
+        synced_alerts = []
+        for a in list(parser_alerts) + list(existing_alerts):
+            text = str(a).strip() if a is not None else ""
+            if text and text not in synced_alerts:
+                synced_alerts.append(text)
+        for fn in merged:
+            if not any(fn.lower() in str(a).lower() for a in synced_alerts):
+                synced_alerts.append(f"{fn}() a échoué.")
+        rtx["alerts"] = synced_alerts
 
         if not (rtx.get("pistes_diagnostiques") or "").strip() and merged:
             rtx["pistes_diagnostiques"] = (
@@ -311,6 +371,9 @@ def compliance_auditor_node(state: AgentState) -> Dict[str, Any]:
             "- Pour chaque transaction avec un champ `alerts_found` non vide, passe `is_suspicious` à true et renseigne les `alerts` avec de courts libellés d'alerte.\n"
             "- OBLIGATOIRE : copie telle quelle la liste `failed_functions` de chaque transaction parser vers le champ `failed_functions` du rapport "
             "(noms exacts, ex. GetAuthRouting). Si la liste parser est vide, mets `[]`. Ne renomme et n'omets aucune fonction.\n"
+            "- OBLIGATOIRE : le tableau `alerts` doit contenir AU MOINS une alerte pour CHAQUE entrée de `failed_functions` "
+            "(y compris GetOriginalAuthData si présent). Ne fusionne pas plusieurs fonctions en une seule alerte si cela fait disparaître un nom.\n"
+            "- Dans `chronology`, si tu mentionnes un résultat -1/NOK pour une fonction, cette fonction DOIT aussi figurer dans `failed_functions` et `alerts`.\n"
             "- Remplis la section `field_analysis` STRICTEMENT à partir des informations trouvées dans les listes `format_alerts` des transactions. Transpose chaque alerte de `format_alerts` en un élément du tableau `field_analysis` en utilisant fidèlement les clés : `field_number` (ex. 'FLD 003'), `field_name`, `expected_type` (utilise attributes ou expected_type_label), `source` (provenant de la clé source/source_file), `observed_value`, `non_conformity_type` et une note descriptive sur la non-conformité dans `compliance_note`.\n"
             "- Si le testeur demande UNIQUEMENT la story (sans alertes ni justification), retourne le JSON avec `alerts` et `field_analysis` sous forme de listes vides `[]` et `suspicious_count` à 0.\n"
             "- Si la demande est d'analyser le fichier ou demande les alertes/justifications/pistes, remplis l'intégralité des sections `summary`, `transactions` et `field_analysis`.\n"

@@ -50,7 +50,7 @@ function FunctionDocModal({ functionName, sessionId, onClose }) {
           )}
           <button className="func-modal-close" style={{ position: "absolute", right: "22px", top: "18px" }} onClick={onClose} aria-label="Fermer">✕</button>
         </div>
-        <div className="func-modal-body" style={{ padding: "20px 22px", display: "flex", flexDirection: "column", gap: "16px" }}>
+        <div className="func-modal-body" style={{ padding: "20px 22px", display: "flex", flexDirection: "column", gap: "16px", minHeight: 0, overflowY: "auto" }}>
           {loading && <p className="func-modal-loading">🔄 Recherche dans la documentation…</p>}
           {error && <p className="func-modal-error">⚠️ {error}</p>}
 
@@ -83,9 +83,10 @@ function FunctionDocModal({ functionName, sessionId, onClose }) {
                 borderRadius: "10px",
                 background: "linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%)",
                 boxShadow: "0 4px 14px rgba(249, 115, 22, 0.12)",
-                overflow: "hidden",
+                overflow: "visible",
                 margin: "8px 0 4px 0",
-                animation: "exception-pulse 0.35s ease"
+                animation: "exception-pulse 0.35s ease",
+                flexShrink: 0
               }}>
                 <div className="func-exception-header" style={{
                   display: "flex",
@@ -134,14 +135,19 @@ function FunctionDocModal({ functionName, sessionId, onClose }) {
 }
 
 // ─── Helpers chronologie ─────────────────────────────────────────────────────
+function isErrorLikeStep(step) {
+  const s = String(step || "").toLowerCase();
+  return /\b(nok|échec|echec|error|failed|échecée|refuse)\b|-\s*[1-9]\d*|r[ée]sultat\s*-/.test(s);
+}
+
 function extractFunctionNameFromStep(step) {
   const text = String(step || "");
   const patterns = [
-    /\b([A-Z][a-zA-Z0-9_]{2,})\s*\(\s*\)/, // GetOriginalAuthData()
-    /fonction\s+[`'"]?([A-Z][a-zA-Z0-9_]+)/i,
-    /ex[ée]cution de\s+([A-Z][a-zA-Z0-9_]+)/i,
-    /appel(?:\s+de)?\s+([A-Z][a-zA-Z0-9_]+)/i,
-    /\b([A-Z][a-zA-Z0-9_]{2,})\s*:\s*r[ée]sultat/i,
+    /\b([A-Za-z][A-Za-z0-9_]{2,})\s*\(\s*\)/, // GetOriginalAuthData() / gen_iss_script_data()
+    /fonction\s+[`'"]?([A-Za-z][A-Za-z0-9_]+)/i,
+    /ex[ée]cution de\s+([A-Za-z][A-Za-z0-9_]+)/i,
+    /appel(?:\s+de)?\s+([A-Za-z][A-Za-z0-9_]+)/i,
+    /\b([A-Za-z][A-Za-z0-9_]{2,})\s*:\s*r[ée]sultat/i,
   ];
   for (const re of patterns) {
     const m = text.match(re);
@@ -150,34 +156,50 @@ function extractFunctionNameFromStep(step) {
   return null;
 }
 
-function isErrorLikeStep(step) {
-  const s = String(step || "").toLowerCase();
-  return /\b(nok|échec|echec|error|failed|échecée|refuse)\b|-\s*[1-9]\d*|r[ée]sultat\s*-/.test(s);
+/** Fusionne failed_functions du rapport + fonctions en échec déduites de la chronologie. */
+function mergeFailedFunctionsFromChronology(baseFailed, chronologySteps) {
+  const merged = [];
+  const seen = new Set();
+  const push = (fn) => {
+    const name = String(fn || "").trim();
+    if (!name) return;
+    const key = name.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    merged.push(name);
+  };
+  (baseFailed || []).forEach(push);
+  (chronologySteps || []).forEach((step) => {
+    if (!isErrorLikeStep(step)) return;
+    push(extractFunctionNameFromStep(step));
+  });
+  return merged;
 }
 
 function detectFailedFuncInStep(step, failedFunctions) {
   if (!step) return null;
   const stepLower = String(step).toLowerCase();
 
-  // 1. Priorité : fonctions explicitement listées dans failed_functions
+  // Uniquement les fonctions de failed_functions (aligné avec les alertes)
   if (failedFunctions?.length) {
     for (const fn of failedFunctions) {
       if (fn && stepLower.includes(String(fn).toLowerCase())) return fn;
     }
   }
-
-  // 2. Fallback : étape d'échec dont le nom de fonction apparaît dans le texte
-  //    (ex: "Exécution de GetOriginalAuthData() : résultat -1" alors que le LLM
-  //    n'a pas recopié GetOriginalAuthData dans failed_functions)
-  if (isErrorLikeStep(step)) {
-    return extractFunctionNameFromStep(step);
-  }
   return null;
 }
 
-function getChronologyStepStatus(step, matchedFunc) {
-  if (matchedFunc) return "error";
-  if (isErrorLikeStep(step)) return "error";
+function extractDocFuncFromStep(step, failedFunctions) {
+  // Pour le bouton "?" : d'abord failed_functions, sinon extraction sur étape d'échec
+  const fromList = detectFailedFuncInStep(step, failedFunctions);
+  if (fromList) return fromList;
+  if (isErrorLikeStep(step)) return extractFunctionNameFromStep(step);
+  return null;
+}
+
+function getChronologyStepStatus(step, matchedFailedFunc) {
+  // Statut "Échec" = fonction présente dans failed_functions (même source que les alertes)
+  if (matchedFailedFunc) return "error";
   const s = String(step || "").toLowerCase();
   if (/\b(ok|succès|succes|approved|approuv|réussi|reussi)\b/.test(s)) return "success";
   return "neutral";
@@ -203,12 +225,13 @@ function renderChronologyStepText(step, matchedFunc) {
 // ─── Étape de chronologie avec détection de fonction en échec ────────────────
 function ChronologyStep({ step, index, total, failedFunctions, sessionId }) {
   const [showDoc, setShowDoc] = useState(false);
-  const matchedFunc = detectFailedFuncInStep(step, failedFunctions);
-  const status = getChronologyStepStatus(step, matchedFunc);
+  const matchedFailedFunc = detectFailedFuncInStep(step, failedFunctions);
+  const docFunc = extractDocFuncFromStep(step, failedFunctions);
+  const status = getChronologyStepStatus(step, matchedFailedFunc);
   const isLast = index === total - 1;
 
   return (
-    <li className={`chronology-step chrono-status-${status}${matchedFunc ? " chrono-has-help" : ""}`}>
+    <li className={`chronology-step chrono-status-${status}${docFunc ? " chrono-has-help" : ""}`}>
       <div className="chrono-rail" aria-hidden="true">
         <span className={`chrono-node chrono-node-${status}`}>
           {status === "error" ? "!" : status === "success" ? "✓" : index + 1}
@@ -222,22 +245,22 @@ function ChronologyStep({ step, index, total, failedFunctions, sessionId }) {
           {status === "success" && <span className="chrono-status-pill chrono-pill-success">OK</span>}
         </div>
         <div className="chrono-step-content">
-          <p className="chronology-text">{renderChronologyStepText(step, matchedFunc)}</p>
-          {matchedFunc && (
+          <p className="chronology-text">{renderChronologyStepText(step, docFunc)}</p>
+          {docFunc && (
             <button
               className="chrono-help-btn"
-              title={`Documentation de ${matchedFunc}`}
+              title={`Documentation de ${docFunc}`}
               onClick={() => setShowDoc(true)}
-              aria-label={`Voir la documentation de ${matchedFunc}`}
+              aria-label={`Voir la documentation de ${docFunc}`}
             >
               ?
             </button>
           )}
         </div>
       </div>
-      {showDoc && matchedFunc && (
+      {showDoc && docFunc && (
         <FunctionDocModal
-          functionName={matchedFunc}
+          functionName={docFunc}
           sessionId={sessionId}
           onClose={() => setShowDoc(false)}
         />
@@ -256,17 +279,24 @@ function TransactionCard({ transaction, index, sessionId }) {
     (transaction.response_code_label &&
       transaction.response_code_label.toLowerCase().includes("approuv"));
 
-  const alertCount = transaction.alerts?.length || 0;
-  const failedFunctions = Array.isArray(transaction.failed_functions)
-    ? transaction.failed_functions
-    : [];
-
   const chronologySteps = Array.isArray(transaction.chronology)
     ? transaction.chronology.filter((s) => String(s || "").trim())
     : String(transaction.chronology || "")
         .split("\n")
         .map((s) => s.replace(/^[-•]\s*/, "").trim())
         .filter(Boolean);
+
+  // Inclut aussi les fonctions déduites de la chronologie (ex: GetOriginalAuthData() : résultat -1)
+  const failedFunctions = mergeFailedFunctionsFromChronology(
+    Array.isArray(transaction.failed_functions) ? transaction.failed_functions : [],
+    chronologySteps
+  );
+
+  const alertCount = (() => {
+    const fromAlerts = Array.isArray(transaction.alerts) ? transaction.alerts.length : 0;
+    // Aligne le badge "X alerte(s)" sur failed_functions (source de vérité des échecs)
+    return Math.max(fromAlerts, failedFunctions.length);
+  })();
 
   // Titre principal : RRN (ou fallback STAN → index)
   const titleRRN = transaction.rrn
@@ -396,9 +426,8 @@ function TransactionCard({ transaction, index, sessionId }) {
 
       {/* ── Chronologie dépliable ── */}
       {expanded && chronologySteps.length > 0 && (() => {
-        const errorCount = chronologySteps.filter(
-          (s) => getChronologyStepStatus(s, detectFailedFuncInStep(s, failedFunctions)) === "error"
-        ).length;
+        // Compteur aligné sur failed_functions (= source des alertes), pas sur heuristique texte
+        const errorCount = failedFunctions.length;
         return (
           <div className="chronology-accordion">
             <div className="chronology-header">
