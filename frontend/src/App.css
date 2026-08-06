@@ -735,20 +735,58 @@
 }
 
 .toggle-chronology-btn {
-  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: #f8fafc;
   border: 1px solid #cbd5e1;
-  color: #475569;
-  padding: 4px 10px;
-  border-radius: 6px;
+  color: #334155;
+  padding: 5px 10px 5px 8px;
+  border-radius: 8px;
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+  white-space: nowrap;
 }
 
 .toggle-chronology-btn:hover {
   background: #f1f5f9;
+  border-color: #94a3b8;
   color: #0f172a;
+}
+
+.toggle-chronology-btn.toggle-chrono-open {
+  background: #ecfdf5;
+  border-color: #6ee7b7;
+  color: #047857;
+}
+
+.toggle-chrono-icon {
+  display: inline-flex;
+  width: 14px;
+  justify-content: center;
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.toggle-chrono-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #1e293b;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.toggle-chrono-open .toggle-chrono-count {
+  background: #059669;
 }
 
 /* Identifiers */
@@ -812,34 +850,246 @@
   font-weight: 600;
 }
 
-/* Accordion Chronology */
+/* Accordion Chronology — timeline verticale */
 .chronology-accordion {
-  margin-top: 6px;
-  padding: 10px 14px;
-  background: #fafafa;
-  border-radius: 6px;
-  border-left: 3px solid #3b82f6;
+  margin-top: 4px;
+  padding: 14px 16px 10px;
+  background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  animation: slide-in 0.22s ease;
+}
+
+.chronology-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.chronology-header-left {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .chronology-title {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
-  color: #1e293b;
-  margin: 0 0 6px 0;
+  color: #0f172a;
+  margin: 0;
+  letter-spacing: -0.2px;
+}
+
+.chronology-subtitle {
+  font-size: 11px;
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.chronology-header-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.chrono-stat-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+}
+
+.chrono-stat-error {
+  background: #fef2f2;
+  color: #b91c1c;
+  border-color: #fecaca;
 }
 
 .chronology-list {
+  list-style: none;
   margin: 0;
-  padding-left: 18px;
-  font-size: 12px;
-  color: #334155;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
 }
 
 .chronology-step {
-  line-height: 1.4;
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  position: relative;
+  padding: 0 0 14px 0;
+}
+
+.chronology-step:last-child {
+  padding-bottom: 2px;
+}
+
+.chrono-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex-shrink: 0;
+  width: 26px;
+}
+
+.chrono-node {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 800;
+  z-index: 1;
+  flex-shrink: 0;
+  border: 2px solid transparent;
+}
+
+.chrono-node-neutral {
+  background: #fff;
+  color: #475569;
+  border-color: #cbd5e1;
+  box-shadow: 0 0 0 3px #f8fafc;
+}
+
+.chrono-node-success {
+  background: #059669;
+  color: #fff;
+  border-color: #047857;
+  box-shadow: 0 0 0 3px #ecfdf5;
+}
+
+.chrono-node-error {
+  background: #dc2626;
+  color: #fff;
+  border-color: #b91c1c;
+  box-shadow: 0 0 0 3px #fef2f2;
+}
+
+.chrono-connector {
+  flex: 1;
+  width: 2px;
+  min-height: 12px;
+  margin-top: 4px;
+  background: linear-gradient(180deg, #cbd5e1 0%, #e2e8f0 100%);
+  border-radius: 2px;
+}
+
+.chrono-status-error .chrono-connector {
+  background: linear-gradient(180deg, #fca5a5 0%, #e2e8f0 100%);
+}
+
+.chrono-step-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 2px 0 0;
+}
+
+.chrono-step-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chrono-step-index {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: #94a3b8;
+}
+
+.chrono-status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.chrono-pill-error {
+  background: #fee2e2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+}
+
+.chrono-pill-success {
+  background: #dcfce7;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+}
+
+.chrono-step-content {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.chrono-status-error .chrono-step-content {
+  background: #fff7f7;
+  border-color: #fecaca;
+  box-shadow: inset 3px 0 0 #ef4444;
+}
+
+.chrono-status-success .chrono-step-content {
+  border-color: #bbf7d0;
+  box-shadow: inset 3px 0 0 #22c55e;
+}
+
+.chronology-text {
+  flex: 1;
+  margin: 0;
+  font-size: 12.5px;
+  color: #334155;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.chrono-func-highlight {
+  background: #fee2e2;
+  color: #991b1b;
+  font-family: 'Consolas', 'Cascadia Code', monospace;
+  font-weight: 700;
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid #fecaca;
+}
+
+@media (max-width: 640px) {
+  .chronology-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .tx-card-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
 }
 
 /* Field Analysis Table */
@@ -1140,26 +1390,11 @@
    PARTIE C — Chronologie : bouton aide ? et modale
    ═══════════════════════════════════════════════════════════════ */
 
-.chronology-step {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 3px 0;
-  position: relative;
-}
-
-.chronology-text {
-  flex: 1;
-  font-size: 12.5px;
-  color: #334155;
-  line-height: 1.55;
-}
-
 /* Bouton ? aide contextuelle */
 .chrono-help-btn {
   flex-shrink: 0;
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
   background: #1e3a8a;
   color: #fff;
@@ -1172,11 +1407,11 @@
   justify-content: center;
   transition: background 0.18s, transform 0.12s;
   line-height: 1;
-  margin-top: 1px;
+  margin-top: 0;
 }
 .chrono-help-btn:hover {
   background: #059669;
-  transform: scale(1.15);
+  transform: scale(1.12);
 }
 
 /* Modale d'aide */
