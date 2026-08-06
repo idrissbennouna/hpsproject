@@ -38,6 +38,9 @@ function ValidationAgentPanel({ onAnswerSuccess, initialConversation, onConversa
   // Si une conversation initiale est fournie (depuis l'historique), charger son état complet
   useEffect(() => {
     if (initialConversation) {
+      // Reset immédiat pour éviter tout résidu visuel de la conversation précédente
+      setMessages([]);
+      setError("");
       setConvId(initialConversation.id);
       // Fetch full conversation with messages
       axios.get(`http://127.0.0.1:8000/api/v1/conversations/${initialConversation.id}`)
@@ -45,11 +48,23 @@ function ValidationAgentPanel({ onAnswerSuccess, initialConversation, onConversa
           const conv = res.data;
           if (conv && Array.isArray(conv.messages) && conv.messages.length > 0) {
             setMessages(conv.messages);
+          } else {
+            // Conversation vide : indiquer à l'utilisateur qu'il peut poser une question
+            setError("");  // Pas d'erreur, juste une conversation vide = normal pour commencer
           }
         })
-        .catch(() => {/* silently fail */});
+        .catch((err) => {
+          const status = err.response?.status;
+          const detail = err.response?.data?.detail;
+          if (status === 404) {
+            setError(`Conversation introuvable (id: ${initialConversation.id}). Elle a peut-être été supprimée.`);
+          } else {
+            setError(detail || "Erreur lors du chargement de la conversation depuis l'historique.");
+          }
+        });
     }
   }, [initialConversation]);
+
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });

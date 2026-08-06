@@ -24,6 +24,8 @@
     "004": {"name": "Amount, Transaction", "description": "Montant de la transaction"},
     "006": {"name": "Amount, Cardholder Billing", "description": "Montant facturé au porteur"},
     "007": {"name": "Transmission Date & Time", "description": "Date et heure de transmission (MMDDhhmmss)"},
+    "009": {"name": "Conversion Rate, Settlement", "description": "Taux de conversion, règlement interbancaire (8 N)"},
+    "010": {"name": "Conversion Rate, Cardholder Billing", "description": "Taux de conversion, facturation titulaire (8 N)"},
     "011": {"name": "STAN", "description": "System Trace Audit Number (Numéro séquentiel)"},
     "012": {"name": "Time, Local Transaction", "description": "Heure locale de la transaction (hhmmss)"},
     "013": {"name": "Date, Local Transaction", "description": "Date locale de la transaction (MMDD)"},

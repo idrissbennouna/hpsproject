@@ -60,8 +60,11 @@ class TestOptionalSpecAndSessionRAG(unittest.TestCase):
             self.assertIn("=== DOCUMENT DE SPÉCIFICATION FOURNI POUR CETTE ANALYSE ===", res["rag_context"])
             self.assertIn("uploaded_spec.pdf", res["rag_context"])
 
-        # Test deduplicated field lookups
-        sample_fields = {
+        # Test : priorité de référentiel — les champs standard ISO 8583 ne passent JAMAIS par RAG
+        # Tous les champs ci-dessous (003, 011, 037, 039) sont dans STANDARD_ISO_FIELDS.
+        # Depuis le correctif BUG 1, search_session_chunks_keyword ne doit PAS être appelé
+        # pour ces champs, même si session_id est fourni.
+        standard_fields = {
             "003": {"value": "000000"},
             "011": {"value": "123456"},
             "037": {"value": "402812345678"},
@@ -69,9 +72,22 @@ class TestOptionalSpecAndSessionRAG(unittest.TestCase):
         }
 
         with patch("app.services.field_validator.search_session_chunks_keyword", return_value=[]) as mock_keyword:
-            alerts = validate_transaction_fields(sample_fields, session_id="session_test_123")
-            # Verify search_session_chunks_keyword was called exactly 4 times (1 per unique field), not per transaction
-            self.assertEqual(mock_keyword.call_count, 4)
+            alerts = validate_transaction_fields(standard_fields, session_id="session_test_123")
+            # COMPORTEMENT CORRECT APRÈS CORRECTIF : 0 appel RAG pour les champs standard
+            self.assertEqual(mock_keyword.call_count, 0,
+                "Les champs ISO 8583 standard (003, 011, 037, 039) ne doivent JAMAIS "
+                "déclencher une recherche dans le document de session (priorité référentiel standard).")
+
+        # Test : un champ propriétaire non-standard DOIT passer par le RAG session
+        proprietary_fields = {
+            "200": {"value": "PROP_VALUE"},  # champ fictif non présent dans STANDARD_ISO_FIELDS
+        }
+
+        with patch("app.services.field_validator.search_session_chunks_keyword", return_value=[]) as mock_keyword:
+            alerts = validate_transaction_fields(proprietary_fields, session_id="session_test_123")
+            # Un champ non-standard doit bien appeler le RAG session
+            self.assertEqual(mock_keyword.call_count, 1,
+                "Un champ propriétaire non-standard (FLD 200) doit déclencher une recherche RAG dans le document de session.")
 
 
 if __name__ == "__main__":

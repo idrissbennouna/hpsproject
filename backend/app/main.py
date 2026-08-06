@@ -638,7 +638,8 @@ async def analyze_logs(
         # PARTIE A — Sauvegarde automatique de la conversation "logs"
         try:
             from app.services.conversation_history import create_conversation
-            _conv_title = Path(safe_filename).stem[:60]
+            # Titre lisible : "Analyse <nom_du_fichier>" — jamais un libellé générique
+            _conv_title = f"Analyse {safe_filename}"[:80]
             create_conversation(
                 agent_type="logs",
                 title=_conv_title,
@@ -739,19 +740,27 @@ async def ask_validation_agent(request: ValidationRequest):
         saved_conv_id = None
         try:
             from app.services.conversation_history import create_conversation, update_conversation, get_conversation
-            _question_preview = question[:50] + ("..." if len(question) > 50 else "")
+            from app.services.session_storage import get_session_files
+            # Titre lisible : priorité au nom du fichier de session uploadé, sinon début de la question
+            _session_files = get_session_files(request.session_id or "")
+            if _session_files:
+                _first_file_name = _session_files[0].get("name", "")
+                _conv_title = f"Analyse {_first_file_name}"[:80]
+            else:
+                _question_preview = question[:60] + ("..." if len(question) > 60 else "")
+                _conv_title = _question_preview
             _all_messages = list(request.chat_history or []) + [
                 {"role": "user", "content": question},
                 {"role": "assistant", "content": final_response, "sources": sources},
             ]
             _cid = request.conv_id
             if _cid and get_conversation(_cid):
-                update_conversation(_cid, messages=_all_messages)
+                update_conversation(_cid, title=_conv_title, messages=_all_messages)
                 saved_conv_id = _cid
             else:
                 _new_conv = create_conversation(
                     agent_type="docs",
-                    title=_question_preview,
+                    title=_conv_title,
                     messages=_all_messages,
                 )
                 saved_conv_id = _new_conv["id"] if _new_conv else None

@@ -5,11 +5,19 @@ import ValidationAgentPanel from "./ValidationAgentPanel";
 import StructuredReport from "./components/StructuredReport";
 import "./App.css";
 
-// ─── Utilitaire : timestamp relatif ──────────────────────────────────────────
+// ─── Utilitaire : timestamp relatif ─────────────────────────────────────────────────
 function relativeTime(isoString) {
   if (!isoString) return "";
   try {
-    const diff = Date.now() - new Date(isoString).getTime();
+    // Normalise les timestamps UTC Python qui peuvent avoir 6 décimales (µs)
+    // vers 3 décimales (ms) pour éviter NaN sur les navigateurs stricts.
+    // Ex: "2026-08-06T10:01:28.123456+00:00" → "2026-08-06T10:01:28.123+00:00"
+    const normalized = isoString.replace(
+      /(\d{2}:\d{2}:\d{2})\.?(\d{3})?(\d*)([+Z])/,
+      (_, time, ms, _extra, tz) => `${time}.${(ms || "000")}${tz}`
+    );
+    const diff = Date.now() - new Date(normalized).getTime();
+    if (isNaN(diff) || diff < 0) return "";
     const mins = Math.floor(diff / 60000);
     if (mins < 1) return "à l'instant";
     if (mins < 60) return `il y a ${mins}m`;
@@ -321,6 +329,14 @@ function App() {
 
   // Part A: Load a past logs conversation from history
   const handleSelectLogsConversation = async (conv) => {
+    // Reset immédiat pour éviter d'afficher les données de la conversation précédente
+    setResult(null);
+    setPdfFilename("");
+    setPdfFailed(false);
+    setError("");
+    setActiveAgent("Chargement...");
+    setProgressDetail("");
+    setActiveConvId(conv.id);
     try {
       const res = await axios.get(`http://127.0.0.1:8000/api/v1/conversations/${conv.id}`);
       const fullConv = res.data;
@@ -330,12 +346,22 @@ function App() {
         setPdfFilename(reportData.pdf_filename || "");
         setPdfFailed(reportData.pdf_generation_failed || false);
         setCurrentJobId(conv.id);
-        setActiveConvId(conv.id);
         setActiveAgent("FINISH");
         setProgressDetail("Rapport restauré depuis l'historique.");
+      } else {
+        // La conversation existe mais n'a pas de résultat (ex: analyse avortée)
+        setActiveAgent("Idle");
+        setError("Cette conversation ne contient aucun rapport d'analyse sauvegardé.");
       }
-    } catch {
-      // silently fail
+    } catch (err) {
+      const status = err.response?.status;
+      const detail = err.response?.data?.detail;
+      setActiveAgent("Idle");
+      if (status === 404) {
+        setError(`Conversation introuvable (id: ${conv.id}). Elle a peut-être été supprimée.`);
+      } else {
+        setError(detail || "Erreur lors du chargement de la conversation depuis l'historique.");
+      }
     }
   };
 
