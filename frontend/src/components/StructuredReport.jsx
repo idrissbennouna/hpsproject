@@ -165,6 +165,7 @@ function HsmDocModal({ code, sessionId, onClose }) {
   const [loading, setLoading] = useState(true);
   const [docData, setDocData] = useState(null);
   const [error, setError] = useState("");
+  const [excerptOpen, setExcerptOpen] = useState(false);
   const modalRef = useRef(null);
 
   useEffect(() => {
@@ -192,110 +193,341 @@ function HsmDocModal({ code, sessionId, onClose }) {
     if (modalRef.current && !modalRef.current.contains(e.target)) onClose();
   };
 
-  const title = docData?.display || code;
-  const subtitleParts = [
-    docData?.command_code && `Commande ${docData.command_code}`,
-    docData?.response_code && `Réponse ${docData.response_code}`,
-    docData?.error_number && `Erreur ${docData.error_number}`,
-  ].filter(Boolean);
+  const display = docData?.display || code;
+  const syn = docData?.llm_synthesis;
+  const cmdCode = docData?.command_code;
+  const respCode = docData?.response_code;
+  const errNum = docData?.error_number;
 
   return (
     <div className="func-modal-backdrop" onClick={handleBackdropClick} role="dialog" aria-modal="true">
-      <div className="func-modal" ref={modalRef}>
-        <div className="func-modal-header" style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "4px", width: "100%", position: "relative", padding: "18px 22px" }}>
-          <h4 className="func-modal-title" style={{ margin: 0, fontSize: "17px", fontWeight: "700", color: "#1e293b" }}>
-            Erreur HSM — {title}
-          </h4>
-          <div className="func-modal-subtitle" style={{ fontSize: "12px", color: "#64748b", fontWeight: "500" }}>
-            {subtitleParts.length > 0 ? subtitleParts.join(" · ") : "payShield Core Host Commands"}
-            {" · "}
-            {docData?.doc_title || "PUGD0537-004 Core Host Commands V1"}
+      <div
+        className="func-modal"
+        ref={modalRef}
+        style={{
+          maxWidth: "640px",
+          width: "calc(100vw - 32px)",
+          borderRadius: "16px",
+          overflow: "hidden",
+          boxShadow: "0 24px 80px rgba(0,0,0,0.22), 0 4px 24px rgba(0,0,0,0.12)",
+          border: "1px solid rgba(226,232,240,0.8)",
+          display: "flex",
+          flexDirection: "column",
+          maxHeight: "88vh",
+          background: "#fff",
+        }}
+      >
+        {/* ── Header ── */}
+        <div style={{
+          background: "linear-gradient(135deg, #0f172a 0%, #1e3a5f 60%, #1e40af 100%)",
+          padding: "18px 22px 16px",
+          position: "relative",
+          flexShrink: 0,
+        }}>
+          {/* Badge HSM */}
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
+            <span style={{
+              fontSize: "10px", fontWeight: "800", letterSpacing: "1px",
+              textTransform: "uppercase", color: "#60a5fa",
+              background: "rgba(96,165,250,0.15)", border: "1px solid rgba(96,165,250,0.3)",
+              borderRadius: "20px", padding: "3px 10px",
+            }}>HSM payShield</span>
+            <span style={{
+              fontSize: "10px", fontWeight: "700", letterSpacing: "0.5px",
+              textTransform: "uppercase", color: "rgba(255,255,255,0.45)",
+            }}>PUGD0537-004 · Core Host Commands V1</span>
           </div>
-          <button className="func-modal-close" style={{ position: "absolute", right: "22px", top: "18px" }} onClick={onClose} aria-label="Fermer">✕</button>
-        </div>
-        <div className="func-modal-body" style={{ padding: "20px 22px", display: "flex", flexDirection: "column", gap: "16px", minHeight: 0, overflowY: "auto" }}>
-          {loading && <p className="func-modal-loading">Recherche dans PUGD0537 / référentiel HSM…</p>}
-          {error && <p className="func-modal-error">⚠️ {error}</p>}
 
+          {/* Title */}
+          <div style={{ display: "flex", alignItems: "baseline", gap: "10px", flexWrap: "wrap" }}>
+            <h4 style={{
+              margin: 0, fontSize: "20px", fontWeight: "800",
+              color: "#fff", letterSpacing: "-0.3px",
+            }}>
+              Code <span style={{ color: "#fbbf24" }}>{display}</span>
+            </h4>
+            {cmdCode && (
+              <span style={{
+                fontSize: "12px", fontWeight: "600", color: "rgba(255,255,255,0.65)",
+                background: "rgba(255,255,255,0.08)", borderRadius: "6px", padding: "2px 8px",
+              }}>
+                {cmdCode} → {respCode || "?"}
+                {errNum && ` / err ${errNum}`}
+              </span>
+            )}
+          </div>
+
+          <button
+            style={{
+              position: "absolute", right: "16px", top: "16px",
+              background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)",
+              borderRadius: "8px", color: "#fff", fontSize: "16px",
+              width: "30px", height: "30px", cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              lineHeight: 1, padding: 0, transition: "background 0.15s",
+            }}
+            onClick={onClose}
+            aria-label="Fermer"
+            onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.2)"}
+            onMouseLeave={e => e.currentTarget.style.background = "rgba(255,255,255,0.1)"}
+          >✕</button>
+        </div>
+
+        {/* ── Body ── */}
+        <div style={{
+          flex: 1, overflowY: "auto", padding: "20px 22px",
+          display: "flex", flexDirection: "column", gap: "14px",
+        }}>
+          {/* Loading skeleton */}
+          {loading && (
+            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", color: "#3b82f6", fontSize: "13px", fontWeight: "600" }}>
+                <span style={{ fontSize: "18px", animation: "spin 1.2s linear infinite", display: "inline-block" }}>⟳</span>
+                Analyse du manuel PUGD0537 et synthèse LLM en cours…
+              </div>
+              {[80, 60, 90, 50].map((w, i) => (
+                <div key={i} style={{
+                  height: "12px", borderRadius: "6px",
+                  background: "linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%)",
+                  width: `${w}%`,
+                  animation: "shimmer 1.5s infinite",
+                  backgroundSize: "200% 100%",
+                }} />
+              ))}
+            </div>
+          )}
+
+          {/* Error */}
+          {error && (
+            <div style={{
+              background: "#fef2f2", border: "1px solid #fecaca",
+              borderRadius: "10px", padding: "14px 16px",
+              color: "#dc2626", fontSize: "13px", fontWeight: "500",
+              display: "flex", alignItems: "center", gap: "8px",
+            }}>
+              <span style={{ fontSize: "18px" }}>⚠️</span>
+              {error}
+            </div>
+          )}
+
+          {/* Not found */}
           {!loading && !error && docData && !docData.found && (
-            <div className="func-modal-not-found" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "8px", textAlign: "center", padding: "20px 0" }}>
-              <span className="func-modal-not-found-icon" style={{ fontSize: "32px" }}>📪</span>
-              <p style={{ margin: 0, fontSize: "14px", color: "#475569", fontWeight: "500", lineHeight: "1.5" }}>
+            <div style={{
+              display: "flex", flexDirection: "column", alignItems: "center",
+              gap: "10px", textAlign: "center", padding: "24px 0",
+            }}>
+              <span style={{ fontSize: "36px" }}>📪</span>
+              <p style={{ margin: 0, fontSize: "14px", color: "#475569", fontWeight: "500", lineHeight: "1.55" }}>
                 {docData.message || "Aucune documentation HSM disponible pour ce code."}
               </p>
             </div>
           )}
 
+          {/* ── Documentation found ── */}
           {!loading && !error && docData && docData.found && (
             <>
-              {docData.placeholder && (
-                <div className="func-desc-section" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                  <h5 style={{ margin: 0, fontSize: "12px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b" }}>
-                    {docData.placeholder.title || "Synthèse"}
-                  </h5>
-                  {docData.placeholder.description && (
-                    <p style={{ margin: 0, fontSize: "13.5px", color: "#334155", lineHeight: "1.55" }}>
-                      {docData.placeholder.description}
-                    </p>
-                  )}
-                  {docData.placeholder.meaning && (
-                    <div className="func-exception-box" style={{
-                      border: "2px solid #f97316",
-                      borderRadius: "10px",
-                      background: "linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%)",
-                      padding: "12px 14px",
+              {/* ── LLM Synthesis (primary content) ── */}
+              {syn ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                  {/* Summary card */}
+                  {syn.summary && (
+                    <div style={{
+                      background: "#f0f9ff",
+                      border: "1px solid #bae6fd",
+                      borderRadius: "12px",
+                      padding: "14px 16px",
                     }}>
-                      <div style={{ fontSize: "11px", fontWeight: "800", color: "#c2410c", textTransform: "uppercase", marginBottom: "6px" }}>
-                        Signification
+                      <div style={{
+                        fontSize: "10px", fontWeight: "800", letterSpacing: "1px",
+                        textTransform: "uppercase", color: "#0369a1", marginBottom: "6px",
+                        display: "flex", alignItems: "center", gap: "6px",
+                      }}>
+                        <span>📌</span> Rôle de la commande
                       </div>
-                      <p style={{ margin: 0, fontSize: "13.5px", color: "#9a3412", fontWeight: "600", lineHeight: "1.55", whiteSpace: "pre-wrap" }}>
-                        {docData.placeholder.meaning}
+                      <p style={{ margin: 0, fontSize: "13.5px", color: "#0c4a6e", lineHeight: "1.6", fontWeight: "500" }}>
+                        {syn.summary}
                       </p>
                     </div>
                   )}
-                  {docData.placeholder.diagnostic_hint && (
-                    <p style={{ margin: 0, fontSize: "13px", color: "#475569", lineHeight: "1.5" }}>
-                      <strong>Piste :</strong> {docData.placeholder.diagnostic_hint}
-                    </p>
-                  )}
-                </div>
-              )}
 
-              {Array.isArray(docData.excerpts) && docData.excerpts.length > 0 && (
-                <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                  <h5 style={{ margin: 0, fontSize: "12px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b" }}>
-                    Extraits — {docData.doc_title || "PUGD0537"}
-                  </h5>
-                  {docData.excerpts.map((ex, idx) => (
-                    <div key={idx} style={{
-                      border: "1px solid #e2e8f0",
-                      borderRadius: "8px",
-                      background: "#f8fafc",
-                      padding: "12px 14px",
+                  {/* Meaning card (error highlight) */}
+                  {syn.meaning && (
+                    <div style={{
+                      background: "linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%)",
+                      border: "2px solid #f97316",
+                      borderRadius: "12px",
+                      overflow: "hidden",
+                      boxShadow: "0 4px 16px rgba(249,115,22,0.10)",
                     }}>
-                      <div style={{ fontSize: "11px", fontWeight: "700", color: "#1e3a8a", marginBottom: "8px" }}>
-                        {ex.source || "Source HSM"}
-                        {ex.origin ? ` · ${ex.origin}` : ""}
-                      </div>
-                      <pre style={{
-                        margin: 0,
-                        whiteSpace: "pre-wrap",
-                        wordBreak: "break-word",
-                        fontSize: "12.5px",
-                        lineHeight: "1.55",
-                        color: "#334155",
-                        fontFamily: "Consolas, Cascadia Code, monospace",
+                      <div style={{
+                        background: "rgba(249,115,22,0.08)",
+                        borderBottom: "1px solid rgba(249,115,22,0.15)",
+                        padding: "8px 14px",
+                        display: "flex", alignItems: "center", gap: "6px",
                       }}>
-                        {ex.content}
-                      </pre>
+                        <span style={{ fontSize: "14px" }}>⚠️</span>
+                        <span style={{
+                          fontSize: "10px", fontWeight: "800", letterSpacing: "1px",
+                          textTransform: "uppercase", color: "#c2410c",
+                        }}>Signification de l'erreur</span>
+                      </div>
+                      <p style={{
+                        margin: 0, padding: "12px 14px",
+                        fontSize: "13.5px", color: "#9a3412", fontWeight: "600",
+                        lineHeight: "1.6", whiteSpace: "pre-wrap",
+                      }}>
+                        {syn.meaning}
+                      </p>
                     </div>
-                  ))}
+                  )}
+
+                  {/* Causes card */}
+                  {syn.cause && (
+                    <div style={{
+                      background: "#fefce8",
+                      border: "1px solid #fde68a",
+                      borderRadius: "12px",
+                      padding: "14px 16px",
+                    }}>
+                      <div style={{
+                        fontSize: "10px", fontWeight: "800", letterSpacing: "1px",
+                        textTransform: "uppercase", color: "#b45309", marginBottom: "6px",
+                        display: "flex", alignItems: "center", gap: "6px",
+                      }}>
+                        <span>🔍</span> Causes probables
+                      </div>
+                      <p style={{ margin: 0, fontSize: "13.5px", color: "#78350f", lineHeight: "1.6", fontWeight: "500", whiteSpace: "pre-wrap" }}>
+                        {syn.cause}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Diagnostic hint card */}
+                  {syn.diagnostic_hint && (
+                    <div style={{
+                      background: "#f0fdf4",
+                      border: "1px solid #86efac",
+                      borderRadius: "12px",
+                      padding: "14px 16px",
+                    }}>
+                      <div style={{
+                        fontSize: "10px", fontWeight: "800", letterSpacing: "1px",
+                        textTransform: "uppercase", color: "#15803d", marginBottom: "6px",
+                        display: "flex", alignItems: "center", gap: "6px",
+                      }}>
+                        <span>🛠️</span> Actions de résolution
+                      </div>
+                      <p style={{ margin: 0, fontSize: "13.5px", color: "#14532d", lineHeight: "1.6", fontWeight: "500", whiteSpace: "pre-wrap" }}>
+                        {syn.diagnostic_hint}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* LLM badge */}
+                  <div style={{
+                    display: "flex", alignItems: "center", gap: "6px",
+                    fontSize: "10px", color: "#94a3b8", fontWeight: "600",
+                  }}>
+                    <span style={{
+                      background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
+                      color: "#fff", fontSize: "9px", fontWeight: "800",
+                      borderRadius: "4px", padding: "2px 6px", letterSpacing: "0.5px",
+                    }}>AI</span>
+                    Synthèse générée par LLM · Sources : {(docData.sources || []).join(" · ") || "PUGD0537"}
+                  </div>
                 </div>
+              ) : (
+                /* Fallback to placeholder when no LLM synthesis */
+                docData.placeholder && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                    {docData.placeholder.description && (
+                      <p style={{ margin: 0, fontSize: "13.5px", color: "#334155", lineHeight: "1.6" }}>
+                        {docData.placeholder.description}
+                      </p>
+                    )}
+                    {docData.placeholder.meaning && (
+                      <div style={{
+                        background: "linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%)",
+                        border: "2px solid #f97316", borderRadius: "12px", padding: "12px 14px",
+                      }}>
+                        <div style={{ fontSize: "11px", fontWeight: "800", color: "#c2410c", textTransform: "uppercase", marginBottom: "6px" }}>Signification</div>
+                        <p style={{ margin: 0, fontSize: "13.5px", color: "#9a3412", fontWeight: "600", lineHeight: "1.6", whiteSpace: "pre-wrap" }}>
+                          {docData.placeholder.meaning}
+                        </p>
+                      </div>
+                    )}
+                    {docData.placeholder.diagnostic_hint && (
+                      <p style={{ margin: 0, fontSize: "13px", color: "#475569", lineHeight: "1.5" }}>
+                        <strong>Piste :</strong> {docData.placeholder.diagnostic_hint}
+                      </p>
+                    )}
+                  </div>
+                )
               )}
 
-              {Array.isArray(docData.sources) && docData.sources.length > 0 && (
-                <div style={{ fontSize: "11px", color: "#94a3b8" }}>
-                  Sources : {docData.sources.join(" · ")}
+              {/* ── Accordion: Raw PDF excerpts ── */}
+              {Array.isArray(docData.excerpts) && docData.excerpts.length > 0 && (
+                <div style={{
+                  border: "1px solid #e2e8f0",
+                  borderRadius: "10px",
+                  overflow: "hidden",
+                  marginTop: "4px",
+                }}>
+                  <button
+                    onClick={() => setExcerptOpen((v) => !v)}
+                    style={{
+                      width: "100%", textAlign: "left",
+                      background: excerptOpen ? "#f8fafc" : "#fff",
+                      border: "none", cursor: "pointer",
+                      padding: "10px 14px",
+                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                      fontSize: "11px", fontWeight: "700", color: "#475569",
+                      textTransform: "uppercase", letterSpacing: "0.5px",
+                      transition: "background 0.15s",
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.background = "#f1f5f9"}
+                    onMouseLeave={e => e.currentTarget.style.background = excerptOpen ? "#f8fafc" : "#fff"}
+                  >
+                    <span>📄 Extraits originaux du manuel PDF ({docData.excerpts.length})</span>
+                    <span style={{
+                      fontSize: "14px", transition: "transform 0.2s",
+                      display: "inline-block",
+                      transform: excerptOpen ? "rotate(180deg)" : "rotate(0deg)",
+                    }}>▾</span>
+                  </button>
+                  {excerptOpen && (
+                    <div style={{
+                      borderTop: "1px solid #e2e8f0",
+                      display: "flex", flexDirection: "column", gap: "0",
+                    }}>
+                      {docData.excerpts.map((ex, idx) => (
+                        <div key={idx} style={{
+                          padding: "12px 14px",
+                          borderBottom: idx < docData.excerpts.length - 1 ? "1px solid #f1f5f9" : "none",
+                          background: idx % 2 === 0 ? "#fafafa" : "#fff",
+                        }}>
+                          <div style={{
+                            fontSize: "10px", fontWeight: "700", color: "#1e3a8a",
+                            marginBottom: "6px", display: "flex", alignItems: "center", gap: "6px",
+                          }}>
+                            <span style={{
+                              background: "#eff6ff", border: "1px solid #bfdbfe",
+                              borderRadius: "4px", padding: "1px 6px", fontSize: "9px",
+                            }}>{ex.origin || "pdf"}</span>
+                            {ex.source || "Source HSM"}
+                          </div>
+                          <pre style={{
+                            margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word",
+                            fontSize: "11.5px", lineHeight: "1.55", color: "#334155",
+                            fontFamily: "Consolas, 'Cascadia Code', monospace",
+                            maxHeight: "180px", overflowY: "auto",
+                          }}>
+                            {ex.content}
+                          </pre>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </>
@@ -305,6 +537,8 @@ function HsmDocModal({ code, sessionId, onClose }) {
     </div>
   );
 }
+
+
 function isErrorLikeStep(step) {
   const s = String(step || "").toLowerCase();
   return /\b(nok|échec|echec|error|failed|échecée|refuse)\b|-\s*[1-9]\d*|r[ée]sultat\s*-/.test(s);

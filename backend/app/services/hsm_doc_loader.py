@@ -252,14 +252,107 @@ def _search_pugd_pdf(lookup_key: str, error_number: str, response_code: str, com
     except Exception as e:
         print(f"[WARN] PUGD PDF search failed: {e}")
         return tuple()
-
     hits.sort(key=lambda h: (-h["score"], h["page"]))
     return tuple(hits[:4])
+
+
+# ── LLM synthesis cache (in-memory, by lookup_key) ───────────────────────────
+_LLM_HSM_CACHE: Dict[str, Any] = {}
+
+
+def _build_llm_synthesis(parsed: Dict[str, Optional[str]], excerpts: List[dict], placeholder_block: Optional[dict]) -> Optional[dict]:
+    """
+    Envoie le contenu brut extrait (RAG + PDF + placeholder) au LLM Gemini
+    et retourne une synthèse structurée en 4 sections :
+      summary, meaning, cause, diagnostic_hint
+    """
+    cache_key = parsed.get("lookup_key", "") or ""
+    if cache_key in _LLM_HSM_CACHE:
+        return _LLM_HSM_CACHE[cache_key]
+
+    # Assembler le contenu brut
+    raw_parts: List[str] = []
+
+    # Placeholder d'abord (données connues)
+    if placeholder_block:
+        ph_text = (
+            f"Code HSM : {parsed.get('display', '')}\n"
+            f"Description : {placeholder_block.get('description', '')}\n"
+            f"Signification : {placeholder_block.get('meaning', '')}\n"
+            f"Piste diagnostic : {placeholder_block.get('diagnostic_hint', '')}"
+        )
+        raw_parts.append(ph_text)
+
+    # Extraits RAG/PDF (au plus 3 pour rester dans la fenêtre)
+    for ex in excerpts[:3]:
+        content = (ex.get("content") or "").strip()
+        src = ex.get("source", "")
+        if content:
+            raw_parts.append(f"[Source: {src}]\n{content[:1500]}")
+
+    if not raw_parts:
+        return None
+
+    combined_raw = "\n\n---\n\n".join(raw_parts)
+    display = parsed.get("display") or parsed.get("lookup_key") or "?"
+    cmd = parsed.get("command_code") or "?"
+    resp = parsed.get("response_code") or "?"
+    err_n = parsed.get("error_number") or "?"
+
+    try:
+        from app.core.agent_graph import llm
+        from app.services.llm_util import invoke_llm_with_retry
+        from langchain_core.prompts import ChatPromptTemplate
+        import json as _json
+
+        hsm_prompt = ChatPromptTemplate.from_messages([
+            ("system", (
+                "Tu es un expert en sécurité et cryptographie sur les HSM Thales payShield (Core Host Commands).\n"
+                "À partir des informations brutes fournies sur un code / erreur HSM, génère un OBJET JSON STRICTEMENT VALIDE "
+                "avec exactement ces 4 clés (rien d'autre, pas de markdown, pas de texte en dehors du JSON) :\n"
+                "{\n"
+                '  "summary": "<1-2 phrases : que fait la commande host associée à ce code HSM, son rôle dans le flux payShield>",\n'
+                '  "meaning": "<1-2 phrases : que signifie précisément ce code d\'erreur / réponse pour la commande concernée>",\n'
+                '  "cause": "<1-3 causes techniques probables : format de clé invalide, parité, PIN block, configuration LMK, etc.>",\n'
+                '  "diagnostic_hint": "<1-2 actions concrètes pour résoudre : que vérifier en premier (clés, format, logs HSM, table erreurs PUGD0537)>"\n'
+                "}\n"
+                "Si les extraits ne contiennent pas d'info suffisante, utilise tes connaissances du manuel PUGD0537 payShield Core Host Commands.\n"
+                "RÉPONDS UNIQUEMENT avec l'objet JSON valide, sans aucun texte autour."
+            )),
+            ("user", (
+                "Code HSM : {display}\n"
+                "Commande : {cmd} | Réponse : {resp} | Numéro erreur : {err_n}\n\n"
+                "Documentation brute disponible :\n{raw_doc}"
+            )),
+        ])
+
+        llm_resp = invoke_llm_with_retry(
+            llm,
+            hsm_prompt.format_messages(
+                display=display, cmd=cmd, resp=resp, err_n=err_n,
+                raw_doc=combined_raw[:4000]
+            )
+        )
+        resp_text = str(getattr(llm_resp, "content", llm_resp) or "").strip()
+        # Nettoyer les balises markdown éventuelles
+        if resp_text.startswith("```"):
+            import re
+            resp_text = re.sub(r"^```(?:json)?\s*", "", resp_text, flags=re.IGNORECASE)
+            resp_text = re.sub(r"\s*```$", "", resp_text).strip()
+        parsed_json = _json.loads(resp_text)
+        if isinstance(parsed_json, dict) and "summary" in parsed_json:
+            _LLM_HSM_CACHE[cache_key] = parsed_json
+            return parsed_json
+    except Exception as e:
+        print(f"[WARN] HSM LLM synthesis failed for '{display}': {e}")
+
+    return None
 
 
 def lookup_hsm_documentation(code: str, session_id: Optional[str] = None) -> dict:
     """
     Point d'entrée principal pour GET /api/v1/hsm/{code}/doc.
+    Retourne la documentation HSM enrichie par LLM (synthèse structurée).
     """
     parsed = parse_hsm_code(code)
     if not parsed.get("lookup_key"):
@@ -269,6 +362,7 @@ def lookup_hsm_documentation(code: str, session_id: Optional[str] = None) -> dic
             "message": "Code HSM invalide ou manquant.",
             "sources": [],
             "excerpts": [],
+            "llm_synthesis": None,
         }
 
     excerpts: List[dict] = []
@@ -294,26 +388,25 @@ def lookup_hsm_documentation(code: str, session_id: Optional[str] = None) -> dic
     except Exception as e:
         print(f"[WARN] HSM RAG lookup failed: {e}")
 
-    # 3 : PDF local PUGD0537
-    if not excerpts:
-        pdf_hits = _search_pugd_pdf(
-            parsed.get("lookup_key") or "",
-            parsed.get("error_number") or "",
-            parsed.get("response_code") or "",
-            parsed.get("command_code") or "",
-        )
-        for h in pdf_hits:
-            label = f"{h['source']} (p. {h['page']})"
-            excerpts.append({
-                "source": label,
-                "page": h["page"],
-                "command_code": parsed.get("command_code"),
-                "response_code": parsed.get("response_code"),
-                "content": h["content"],
-                "origin": "pugd_pdf",
-            })
-            if label not in sources:
-                sources.append(label)
+    # 3 : PDF local PUGD0537 (toujours — en plus des RAG si disponibles)
+    pdf_hits = _search_pugd_pdf(
+        parsed.get("lookup_key") or "",
+        parsed.get("error_number") or "",
+        parsed.get("response_code") or "",
+        parsed.get("command_code") or "",
+    )
+    for h in pdf_hits:
+        label = f"{h['source']} (p. {h['page']})"
+        excerpts.append({
+            "source": label,
+            "page": h["page"],
+            "command_code": parsed.get("command_code"),
+            "response_code": parsed.get("response_code"),
+            "content": h["content"],
+            "origin": "pugd_pdf",
+        })
+        if label not in sources:
+            sources.append(label)
 
     # 4 : Placeholder JSON
     ph = _placeholder_entry(parsed)
@@ -331,6 +424,15 @@ def lookup_hsm_documentation(code: str, session_id: Optional[str] = None) -> dic
             sources.append(src_label)
 
     found = bool(excerpts) or bool(placeholder_block)
+
+    # 5 : Synthèse LLM (à partir des extraits + placeholder)
+    llm_synthesis = None
+    if found:
+        try:
+            llm_synthesis = _build_llm_synthesis(parsed, excerpts, placeholder_block)
+        except Exception as e:
+            print(f"[WARN] HSM LLM synthesis call failed: {e}")
+
     if not found:
         return {
             "found": False,
@@ -347,6 +449,7 @@ def lookup_hsm_documentation(code: str, session_id: Optional[str] = None) -> dic
             "sources": [],
             "excerpts": [],
             "placeholder": None,
+            "llm_synthesis": None,
         }
 
     return {
@@ -360,5 +463,6 @@ def lookup_hsm_documentation(code: str, session_id: Optional[str] = None) -> dic
         "sources": sources,
         "excerpts": excerpts,
         "placeholder": placeholder_block,
+        "llm_synthesis": llm_synthesis,
         "message": None,
     }

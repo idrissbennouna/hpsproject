@@ -726,15 +726,15 @@ def query_command_code(command_code: str, session_id: str = None, file_hash: str
     if cmd_clean in cmd_map:
         target_cmd_code = cmd_clean
         target_resp_code = cmd_map[cmd_clean]
-        print(f"[QUERY_COMMAND_CODE] '{cmd_clean}' détecté comme command_code → réponse attendue: '{target_resp_code}'")
+        print(f"[QUERY_COMMAND_CODE] '{cmd_clean}' détecté comme command_code -> réponse attendue: '{target_resp_code}'")
     elif cmd_clean in inv_map:
         target_cmd_code = inv_map[cmd_clean]
         target_resp_code = cmd_clean
-        print(f"[QUERY_COMMAND_CODE] '{cmd_clean}' détecté comme response_code → commande source: '{target_cmd_code}'")
+        print(f"[QUERY_COMMAND_CODE] '{cmd_clean}' détecté comme response_code -> commande source: '{target_cmd_code}'")
     else:
         target_cmd_code = cmd_clean
         target_resp_code = cmd_clean
-        print(f"[QUERY_COMMAND_CODE] '{cmd_clean}' non trouvé dans le mapping — recherche directe sur command_code ET response_code")
+        print(f"[QUERY_COMMAND_CODE] '{cmd_clean}' non trouvé dans le mapping - recherche directe sur command_code ET response_code")
 
     try:
         from sqlalchemy import create_engine, text

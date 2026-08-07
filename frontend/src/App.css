@@ -28,6 +28,12 @@
   }
 }
 
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+
 .app-container {
   display: flex;
   height: 100vh;
