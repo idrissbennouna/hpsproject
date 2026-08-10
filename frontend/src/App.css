@@ -306,6 +306,43 @@
   gap: 8px;
 }
 
+.file-upload-box--pdf {
+  position: relative;
+}
+
+.file-upload-box--pdf .file-icon {
+  font-size: 32px;
+}
+
+.file-upload-box--pdf .file-name {
+  display: block;
+  font-size: 15px;
+  color: #111827;
+}
+
+.file-upload-box--pdf .file-subtext {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.remove-file-btn {
+  position: absolute;
+  right: 14px;
+  top: 14px;
+  background: #ef4444;
+  border: none;
+  color: white;
+  padding: 8px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.remove-file-btn:hover {
+  background: #dc2626;
+}
+
 /* Styled Inputs & Textareas */
 .textarea {
   width: 100%;
@@ -2092,6 +2129,116 @@
 .conv-item-active .conv-title {
   color: #047857;
   font-weight: 700;
+}
+
+.conv-delete-btn {
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 6px;
+  border-radius: 8px;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.conv-delete-btn:hover {
+  background: rgba(248, 113, 113, 0.15);
+  color: #dc2626;
+}
+
+.confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.32);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  padding: 16px;
+}
+
+.confirm-modal {
+  width: min(100%, 420px);
+  background: #ffffff;
+  border-radius: 18px;
+  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.18);
+  padding: 24px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.confirm-modal-header {
+  margin-bottom: 14px;
+}
+
+.confirm-modal-title {
+  font-size: 17px;
+  margin: 0;
+  color: #0f172a;
+}
+
+.confirm-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: #334155;
+  line-height: 1.5;
+}
+
+.confirm-modal-item {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.confirm-error {
+  color: #b91c1c;
+  font-size: 13px;
+}
+
+.confirm-actions {
+  margin-top: 18px;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.confirm-btn {
+  min-width: 96px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.confirm-btn-cancel {
+  background: #f8fafc;
+  color: #475569;
+  border-color: #cbd5e1;
+}
+
+.confirm-btn-cancel:hover {
+  background: #eef2ff;
+}
+
+.confirm-btn-confirm {
+  background: #059669;
+  color: #ffffff;
+}
+
+.confirm-btn-confirm:hover {
+  background: #047857;
+}
+
+.confirm-btn:disabled {
+  opacity: 0.64;
+  cursor: not-allowed;
 }
 
 

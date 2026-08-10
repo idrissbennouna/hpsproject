@@ -44,6 +44,55 @@ function ConversationHistory({ agentType, onSelectConversation, activeConvId, on
     fetchConversations();
   }, [fetchConversations, activeConvId]);
 
+  const [conversationToDelete, setConversationToDelete] = useState(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+
+  useEffect(() => {
+    if (!conversationToDelete) return;
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") {
+        setConversationToDelete(null);
+        setDeleteError("");
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [conversationToDelete]);
+
+  const handleDeleteClick = (e, conv) => {
+    e.stopPropagation();
+    setConversationToDelete(conv);
+    setDeleteError("");
+  };
+
+  const handleCancelDelete = () => {
+    if (isDeleting) return;
+    setConversationToDelete(null);
+    setDeleteError("");
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!conversationToDelete) return;
+    setIsDeleting(true);
+    setDeleteError("");
+
+    try {
+      await axios.delete(`http://127.0.0.1:8000/api/v1/conversations/${conversationToDelete.id}`);
+      setConversations((prev) => prev.filter((item) => item.id !== conversationToDelete.id));
+      if (activeConvId === conversationToDelete.id && onNewConversation) {
+        onNewConversation();
+      }
+      setConversationToDelete(null);
+    } catch (err) {
+      setDeleteError(
+        err.response?.data?.detail || "Impossible de supprimer la conversation."
+      );
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   return (
     <div className="conv-history-section">
       <div className="conv-history-header">
@@ -72,9 +121,51 @@ function ConversationHistory({ agentType, onSelectConversation, activeConvId, on
               <span className="conv-title">
                 {conv.title.length > 32 ? conv.title.slice(0, 32) + "…" : conv.title}
               </span>
+              <button
+                type="button"
+                className="conv-delete-btn"
+                onClick={(e) => handleDeleteClick(e, conv)}
+                title="Supprimer cette conversation"
+                aria-label="Supprimer cette conversation"
+              >
+                🗑️
+              </button>
             </li>
           ))}
         </ul>
+      )}
+
+      {conversationToDelete && (
+        <div className="confirm-backdrop" onClick={handleCancelDelete} role="dialog" aria-modal="true">
+          <div className="confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="confirm-modal-header">
+              <h3 className="confirm-modal-title">Confirmer la suppression</h3>
+            </div>
+            <div className="confirm-modal-body">
+              <p>Êtes-vous sûr de vouloir supprimer cette conversation ?</p>
+              <p className="confirm-modal-item">{conversationToDelete.title}</p>
+              {deleteError && <p className="confirm-error">{deleteError}</p>}
+            </div>
+            <div className="confirm-actions">
+              <button
+                type="button"
+                className="confirm-btn confirm-btn-cancel"
+                onClick={handleCancelDelete}
+                disabled={isDeleting}
+              >
+                Non
+              </button>
+              <button
+                type="button"
+                className="confirm-btn confirm-btn-confirm"
+                onClick={handleConfirmDelete}
+                disabled={isDeleting}
+              >
+                {isDeleting ? "Suppression…" : "Oui"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -87,6 +178,7 @@ function SpecDocSelector({ onSpecSelected, onDocFileChange }) {
   const [libLoading, setLibLoading] = useState(false);
   const [libError, setLibError] = useState("");
   const [selectedHash, setSelectedHash] = useState("");
+  const [selectedFile, setSelectedFile] = useState(null);
 
   useEffect(() => {
     if (mode === "library") {
@@ -108,11 +200,22 @@ function SpecDocSelector({ onSpecSelected, onDocFileChange }) {
   const handleLibrarySelect = (e) => {
     const hash = e.target.value;
     setSelectedHash(hash);
+    setSelectedFile(null);
+    onDocFileChange(null);
     onSpecSelected(hash || null);
   };
 
   const handleUploadChange = (e) => {
-    onDocFileChange(e.target.files[0] || null);
+    const file = e.target.files[0] || null;
+    setSelectedFile(file);
+    setSelectedHash("");
+    onSpecSelected(null);
+    onDocFileChange(file);
+  };
+
+  const handleRemoveSelectedFile = () => {
+    setSelectedFile(null);
+    onDocFileChange(null);
   };
 
   const formatDate = (iso) => {
@@ -141,7 +244,13 @@ function SpecDocSelector({ onSpecSelected, onDocFileChange }) {
         <button
           id="spec-mode-upload-btn"
           className={`spec-mode-btn ${mode === "upload" ? "spec-mode-active" : ""}`}
-          onClick={() => { setMode("upload"); setSelectedHash(""); onSpecSelected(null); }}
+          onClick={() => {
+            setMode("upload");
+            setSelectedHash("");
+            setSelectedFile(null);
+            onSpecSelected(null);
+            onDocFileChange(null);
+          }}
           type="button"
         >
            Nouveau PDF
@@ -183,7 +292,7 @@ function SpecDocSelector({ onSpecSelected, onDocFileChange }) {
 
       {/* Mode : Upload d'un nouveau PDF */}
       {mode === "upload" && (
-        <div className="file-upload-box">
+        <div className="file-upload-box file-upload-box--pdf">
           <input
             type="file"
             accept=".pdf,.PDF"
@@ -192,9 +301,25 @@ function SpecDocSelector({ onSpecSelected, onDocFileChange }) {
             id="doc-file-upload"
           />
           <label htmlFor="doc-file-upload" className="file-label">
-            <span></span>
-            <span>Déposer un document PDF pour cette analyse</span>
+            
+            {selectedFile ? (
+              <>
+                <strong className="file-name">{selectedFile.name}</strong>
+                <span className="file-subtext">Cliquez pour remplacer le document PDF</span>
+              </>
+            ) : (
+              <span>Déposer un document PDF pour cette analyse</span>
+            )}
           </label>
+          {selectedFile && (
+            <button
+              type="button"
+              className="remove-file-btn"
+              onClick={handleRemoveSelectedFile}
+            >
+              Retirer le PDF
+            </button>
+          )}
         </div>
       )}
     </div>
