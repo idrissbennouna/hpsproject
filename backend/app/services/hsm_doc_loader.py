@@ -260,20 +260,108 @@ def _search_pugd_pdf(lookup_key: str, error_number: str, response_code: str, com
 _LLM_HSM_CACHE: Dict[str, Any] = {}
 
 
+def clean_pagination_artifacts(text: str) -> str:
+    if not text:
+        return ""
+    lines = text.split("\n")
+    cleaned_lines = []
+    for line in lines:
+        l_strip = line.strip()
+        # Supprimer les marqueurs de page
+        if re.match(r"^--- Page \d+ ---$", l_strip):
+            continue
+        if re.match(r"^--- Début page suivante.*$", l_strip):
+            continue
+        if re.match(r"^\[CORRESPONDANCE RAG.*\]$", l_strip):
+            continue
+        if re.match(r"^\[Le code de réponse.*\]$", l_strip):
+            continue
+        if "payShield 10K Core Host Commands" in l_strip:
+            continue
+        if "Thales Group" in l_strip and "Page" in l_strip:
+            continue
+        if "All Rights Reserved" in l_strip:
+            continue
+        cleaned_lines.append(line)
+    return "\n".join(cleaned_lines).strip()
+
+
+def score_excerpt(ex: dict, cmd_code: Optional[str], resp_code: Optional[str]) -> float:
+    content = (ex.get("content") or "").upper()
+    score = 0.0
+    
+    meta_cmd = (ex.get("command_code") or "").upper()
+    meta_resp = (ex.get("response_code") or "").upper()
+    
+    # Si les métadonnées mentionnent une AUTRE commande, c'est probablement hors-sujet
+    if cmd_code:
+        if meta_cmd and meta_cmd != cmd_code:
+            score -= 100.0
+        if meta_resp and meta_resp != resp_code:
+            score -= 100.0
+            
+    # Présence des codes commande/réponse comme jetons indépendants dans le texte
+    if cmd_code and re.search(r'\b' + re.escape(cmd_code) + r'\b', content):
+        score += 20.0
+    if resp_code and re.search(r'\b' + re.escape(resp_code) + r'\b', content):
+        score += 20.0
+        
+    # Indices indiquant qu'il s'agit d'une table d'erreur
+    if "ERROR CODE" in content or "RESPONSE CODE" in content:
+        score += 15.0
+    if "NO ERROR" in content:
+        score += 10.0
+        
+    # Contient la structure d'une table d'erreur comme '01' ou '10' avec description
+    if re.search(r"'\d{2}':", content) or re.search(r"'\d{2}'\s*:", content):
+        score += 15.0
+        
+    # Pénaliser les chunks qui mentionnent d'autres chapitres hors-sujet s'ils ne concernent pas la commande demandée
+    if "AS2805" in content and (cmd_code != "A0" and cmd_code != "A2"):
+        score -= 30.0
+        
+    # Pénaliser la Table des Matières
+    if "VERIFY AN INTERCHANGE PIN USING THE ABA PVV METHOD" in content and "275" in content:
+        score -= 5.0
+        
+    return score
+
+
 def _build_llm_synthesis(parsed: Dict[str, Optional[str]], excerpts: List[dict], placeholder_block: Optional[dict]) -> Optional[dict]:
     """
-    Envoie le contenu brut extrait (RAG + PDF + placeholder) au LLM Gemini
-    et retourne une synthèse structurée en 4 sections :
-      summary, meaning, cause, diagnostic_hint
+    Envoie le contenu filtré et nettoyé au LLM Gemini
+    et retourne une synthèse structurée en JSON.
     """
     cache_key = parsed.get("lookup_key", "") or ""
     if cache_key in _LLM_HSM_CACHE:
         return _LLM_HSM_CACHE[cache_key]
 
+    cmd = (parsed.get("command_code") or "").upper() or "?"
+    resp = (parsed.get("response_code") or "").upper() or "?"
+    err_n = parsed.get("error_number") or "?"
+
+    # 1) Nettoyer et scorer les extraits
+    scored_exs = []
+    for ex in excerpts:
+        content_cleaned = clean_pagination_artifacts(ex.get("content") or "")
+        ex_copy = dict(ex)
+        ex_copy["content"] = content_cleaned
+        
+        score = score_excerpt(ex_copy, parsed.get("command_code"), parsed.get("response_code"))
+        # Exclure les extraits avec un score fortement négatif (comme d'autres commandes)
+        if score >= -20:
+            scored_exs.append((score, ex_copy))
+            
+    # Trier par score décroissant
+    scored_exs.sort(key=lambda x: x[0], reverse=True)
+    
+    # Limiter aux 1-2 extraits les plus pertinents pour le LLM
+    filtered_excerpts = [ex for score, ex in scored_exs[:2]]
+
     # Assembler le contenu brut
     raw_parts: List[str] = []
 
-    # Placeholder d'abord (données connues)
+    # Placeholder d'abord (données connues, nettoyées)
     if placeholder_block:
         ph_text = (
             f"Code HSM : {parsed.get('display', '')}\n"
@@ -283,21 +371,17 @@ def _build_llm_synthesis(parsed: Dict[str, Optional[str]], excerpts: List[dict],
         )
         raw_parts.append(ph_text)
 
-    # Extraits RAG/PDF (au plus 3 pour rester dans la fenêtre)
-    for ex in excerpts[:3]:
+    for ex in filtered_excerpts:
         content = (ex.get("content") or "").strip()
         src = ex.get("source", "")
         if content:
-            raw_parts.append(f"[Source: {src}]\n{content[:1500]}")
+            raw_parts.append(f"[Source: {src}]\n{content}")
 
     if not raw_parts:
         return None
 
     combined_raw = "\n\n---\n\n".join(raw_parts)
     display = parsed.get("display") or parsed.get("lookup_key") or "?"
-    cmd = parsed.get("command_code") or "?"
-    resp = parsed.get("response_code") or "?"
-    err_n = parsed.get("error_number") or "?"
 
     try:
         from app.core.agent_graph import llm
@@ -308,16 +392,25 @@ def _build_llm_synthesis(parsed: Dict[str, Optional[str]], excerpts: List[dict],
         hsm_prompt = ChatPromptTemplate.from_messages([
             ("system", (
                 "Tu es un expert en sécurité et cryptographie sur les HSM Thales payShield (Core Host Commands).\n"
-                "À partir des informations brutes fournies sur un code / erreur HSM, génère un OBJET JSON STRICTEMENT VALIDE "
-                "avec exactement ces 4 clés (rien d'autre, pas de markdown, pas de texte en dehors du JSON) :\n"
-                "{\n"
-                '  "summary": "<1-2 phrases : que fait la commande host associée à ce code HSM, son rôle dans le flux payShield>",\n'
-                '  "meaning": "<1-2 phrases : que signifie précisément ce code d\'erreur / réponse pour la commande concernée>",\n'
-                '  "cause": "<1-3 causes techniques probables : format de clé invalide, parité, PIN block, configuration LMK, etc.>",\n'
-                '  "diagnostic_hint": "<1-2 actions concrètes pour résoudre : que vérifier en premier (clés, format, logs HSM, table erreurs PUGD0537)>"\n'
-                "}\n"
-                "Si les extraits ne contiennent pas d'info suffisante, utilise tes connaissances du manuel PUGD0537 payShield Core Host Commands.\n"
-                "RÉPONDS UNIQUEMENT avec l'objet JSON valide, sans aucun texte autour."
+                "À partir des informations brutes fournies sur un code / erreur HSM, génère un OBJET JSON STRICTEMENT VALIDE.\n"
+                "\n"
+                "CONSTRAINTES STRICTES :\n"
+                "1. Utilise EXCLUSIVEMENT le nom de fonction qui apparaît explicitement dans les extraits fournis (souvent en tête de section, motif 'Verify a/an [...] Using the [...] Method' ou similaire).\n"
+                "2. N'invente JAMAIS de sigle technique (ARQC, CVV, EMV, etc.) absent du texte source.\n"
+                "3. Si le nom exact n'est pas clairement identifiable dans les extraits, utilise exactement la chaîne de caractères suivante : 'nom de fonction non clairement identifié dans les extraits disponibles'. N'invente jamais de nom de fonction.\n"
+                "4. Extrais la table des codes d'erreur possibles de manière extrêmement fidèle et exhaustive, ligne par ligne, depuis le texte source (ex: '00', '01', '10', '11', '17', '27', '68', '69' etc. avec leur libellé exact).\n"
+                "5. Pour 'diagnostic_hint', fournis une phrase de piste de diagnostic générique ou spécifique de résolution (ex: 'vérifier le sous-code d'erreur retourné pour identifier la cause précise').\n"
+                "\n"
+                "Format de sortie JSON attendu (aucune balise markdown, aucun texte avant ou après, pas de fioritures) :\n"
+                "{{\n"
+                '  "command_response": "<Code de commande → Code de réponse, ex: EC → ED>",\n'
+                '  "function_name": "<Nom exact de la fonction extrait littéralement du texte source>",\n'
+                '  "description": "<Description courte de 1-2 phrases sur le rôle de la commande>",\n'
+                '  "error_codes": [\n'
+                '    {{"code": "XX", "meaning": "<Libellé exact de l\'erreur>"}}\n'
+                '  ],\n'
+                '  "diagnostic_hint": "<Conseil ou piste de diagnostic, ex: vérifier le sous-code d\'erreur retourné pour identifier la cause précise>"\n'
+                "}}"
             )),
             ("user", (
                 "Code HSM : {display}\n"
@@ -330,21 +423,33 @@ def _build_llm_synthesis(parsed: Dict[str, Optional[str]], excerpts: List[dict],
             llm,
             hsm_prompt.format_messages(
                 display=display, cmd=cmd, resp=resp, err_n=err_n,
-                raw_doc=combined_raw[:4000]
+                raw_doc=combined_raw[:5000]
             )
         )
-        resp_text = str(getattr(llm_resp, "content", llm_resp) or "").strip()
+        content_val = getattr(llm_resp, "content", llm_resp)
+        if isinstance(content_val, list):
+            parts = []
+            for part in content_val:
+                if isinstance(part, dict) and "text" in part:
+                    parts.append(part["text"])
+                elif isinstance(part, str):
+                    parts.append(part)
+            resp_text = "".join(parts).strip()
+        else:
+            resp_text = str(content_val or "").strip()
+        
         # Nettoyer les balises markdown éventuelles
         if resp_text.startswith("```"):
             import re
             resp_text = re.sub(r"^```(?:json)?\s*", "", resp_text, flags=re.IGNORECASE)
             resp_text = re.sub(r"\s*```$", "", resp_text).strip()
+            
         parsed_json = _json.loads(resp_text)
-        if isinstance(parsed_json, dict) and "summary" in parsed_json:
+        if isinstance(parsed_json, dict) and "function_name" in parsed_json:
             _LLM_HSM_CACHE[cache_key] = parsed_json
             return parsed_json
     except Exception as e:
-        print(f"[WARN] HSM LLM synthesis failed for '{display}': {e}")
+        print(f"[WARN] HSM LLM synthesis failed for '{display}': {e}\nRaw LLM response was:\n{resp_text if 'resp_text' in locals() else 'None'}")
 
     return None
 
@@ -388,25 +493,26 @@ def lookup_hsm_documentation(code: str, session_id: Optional[str] = None) -> dic
     except Exception as e:
         print(f"[WARN] HSM RAG lookup failed: {e}")
 
-    # 3 : PDF local PUGD0537 (toujours — en plus des RAG si disponibles)
-    pdf_hits = _search_pugd_pdf(
-        parsed.get("lookup_key") or "",
-        parsed.get("error_number") or "",
-        parsed.get("response_code") or "",
-        parsed.get("command_code") or "",
-    )
-    for h in pdf_hits:
-        label = f"{h['source']} (p. {h['page']})"
-        excerpts.append({
-            "source": label,
-            "page": h["page"],
-            "command_code": parsed.get("command_code"),
-            "response_code": parsed.get("response_code"),
-            "content": h["content"],
-            "origin": "pugd_pdf",
-        })
-        if label not in sources:
-            sources.append(label)
+    # 3 : PDF local PUGD0537 (seulement si aucun extrait RAG n'a été trouvé pour éviter le scan très lourd de 746 pages)
+    if not excerpts:
+        pdf_hits = _search_pugd_pdf(
+            parsed.get("lookup_key") or "",
+            parsed.get("error_number") or "",
+            parsed.get("response_code") or "",
+            parsed.get("command_code") or "",
+        )
+        for h in pdf_hits:
+            label = f"{h['source']} (p. {h['page']})"
+            excerpts.append({
+                "source": label,
+                "page": h["page"],
+                "command_code": parsed.get("command_code"),
+                "response_code": parsed.get("response_code"),
+                "content": h["content"],
+                "origin": "pugd_pdf",
+            })
+            if label not in sources:
+                sources.append(label)
 
     # 4 : Placeholder JSON
     ph = _placeholder_entry(parsed)

@@ -328,77 +328,88 @@ function HsmDocModal({ code, sessionId, onClose }) {
             <>
               {/* ── LLM Synthesis (primary content) ── */}
               {syn ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                  {/* Summary card */}
-                  {syn.summary && (
-                    <div style={{
-                      background: "#f0f9ff",
-                      border: "1px solid #bae6fd",
-                      borderRadius: "12px",
-                      padding: "14px 16px",
-                    }}>
-                      <div style={{
-                        fontSize: "10px", fontWeight: "800", letterSpacing: "1px",
-                        textTransform: "uppercase", color: "#0369a1", marginBottom: "6px",
-                        display: "flex", alignItems: "center", gap: "6px",
+                <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+                  {/* Command & Response + Function Name Box */}
+                  <div style={{
+                    background: "linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%)",
+                    border: "1px solid #cbd5e1",
+                    borderRadius: "12px",
+                    padding: "16px",
+                    boxShadow: "0 2px 8px rgba(0,0,0,0.04)"
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px", flexWrap: "wrap" }}>
+                      <span style={{
+                        fontSize: "14px", fontWeight: "800", color: "#1e3a8a",
+                        background: "#dbeafe", border: "1px solid #bfdbfe",
+                        borderRadius: "6px", padding: "3px 8px"
                       }}>
-                        <span>📌</span> Rôle de la commande
-                      </div>
-                      <p style={{ margin: 0, fontSize: "13.5px", color: "#0c4a6e", lineHeight: "1.6", fontWeight: "500" }}>
-                        {syn.summary}
-                      </p>
+                        {syn.command_response || `${cmdCode} → ${respCode || "?"}`}
+                      </span>
+                      <span style={{ fontSize: "14px", fontWeight: "700", color: "#334155" }}>
+                        {syn.function_name || "Fonction non spécifiée"}
+                      </span>
                     </div>
-                  )}
+                    {syn.description && (
+                      <p style={{ margin: 0, fontSize: "13.5px", color: "#475569", lineHeight: "1.6" }}>
+                        {syn.description}
+                      </p>
+                    )}
+                  </div>
 
-                  {/* Meaning card (error highlight) */}
-                  {syn.meaning && (
+                  {/* Error codes table */}
+                  {Array.isArray(syn.error_codes) && syn.error_codes.length > 0 && (
                     <div style={{
-                      background: "linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%)",
-                      border: "2px solid #f97316",
+                      border: "1px solid #e2e8f0",
                       borderRadius: "12px",
                       overflow: "hidden",
-                      boxShadow: "0 4px 16px rgba(249,115,22,0.10)",
+                      boxShadow: "0 2px 8px rgba(0,0,0,0.04)"
                     }}>
                       <div style={{
-                        background: "rgba(249,115,22,0.08)",
-                        borderBottom: "1px solid rgba(249,115,22,0.15)",
-                        padding: "8px 14px",
-                        display: "flex", alignItems: "center", gap: "6px",
+                        background: "#f8fafc",
+                        borderBottom: "1px solid #e2e8f0",
+                        padding: "10px 14px",
+                        fontSize: "11px",
+                        fontWeight: "800",
+                        textTransform: "uppercase",
+                        color: "#475569",
+                        letterSpacing: "0.5px"
                       }}>
-                        <span style={{ fontSize: "14px" }}>⚠️</span>
-                        <span style={{
-                          fontSize: "10px", fontWeight: "800", letterSpacing: "1px",
-                          textTransform: "uppercase", color: "#c2410c",
-                        }}>Signification de l'erreur</span>
+                        ⚠️ Table des codes d'erreur possibles
                       </div>
-                      <p style={{
-                        margin: 0, padding: "12px 14px",
-                        fontSize: "13.5px", color: "#9a3412", fontWeight: "600",
-                        lineHeight: "1.6", whiteSpace: "pre-wrap",
-                      }}>
-                        {syn.meaning}
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Causes card */}
-                  {syn.cause && (
-                    <div style={{
-                      background: "#fefce8",
-                      border: "1px solid #fde68a",
-                      borderRadius: "12px",
-                      padding: "14px 16px",
-                    }}>
-                      <div style={{
-                        fontSize: "10px", fontWeight: "800", letterSpacing: "1px",
-                        textTransform: "uppercase", color: "#b45309", marginBottom: "6px",
-                        display: "flex", alignItems: "center", gap: "6px",
-                      }}>
-                        <span>🔍</span> Causes probables
+                      <div style={{ overflowX: "auto" }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", textAlign: "left" }}>
+                          <thead>
+                            <tr style={{ background: "#f1f5f9", borderBottom: "1px solid #e2e8f0" }}>
+                              <th style={{ padding: "8px 14px", fontWeight: "700", color: "#475569", width: "100px" }}>Code</th>
+                              <th style={{ padding: "8px 14px", fontWeight: "700", color: "#475569" }}>Signification</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {syn.error_codes.map((item, idx) => {
+                              const isHighlighted = errNum && String(item.code).padStart(2, '0') === String(errNum).padStart(2, '0');
+                              return (
+                                <tr
+                                  key={idx}
+                                  style={{
+                                    borderBottom: idx < syn.error_codes.length - 1 ? "1px solid #f1f5f9" : "none",
+                                    background: isHighlighted ? "rgba(249, 115, 22, 0.12)" : (idx % 2 === 0 ? "#fafafa" : "#fff"),
+                                    fontWeight: isHighlighted ? "700" : "normal",
+                                    color: isHighlighted ? "#c2410c" : "#334155",
+                                    transition: "background-color 0.15s"
+                                  }}
+                                >
+                                  <td style={{ padding: "8px 14px", fontFamily: "monospace", fontSize: "13px" }}>
+                                    {isHighlighted ? "X " : ""}{item.code}
+                                  </td>
+                                  <td style={{ padding: "8px 14px" }}>
+                                    {item.meaning}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
                       </div>
-                      <p style={{ margin: 0, fontSize: "13.5px", color: "#78350f", lineHeight: "1.6", fontWeight: "500", whiteSpace: "pre-wrap" }}>
-                        {syn.cause}
-                      </p>
                     </div>
                   )}
 
@@ -417,7 +428,7 @@ function HsmDocModal({ code, sessionId, onClose }) {
                       }}>
                         <span>🛠️</span> Actions de résolution
                       </div>
-                      <p style={{ margin: 0, fontSize: "13.5px", color: "#14532d", lineHeight: "1.6", fontWeight: "500", whiteSpace: "pre-wrap" }}>
+                      <p style={{ margin: 0, fontSize: "13.5px", color: "#14532d", lineHeight: "1.6", fontWeight: "500" }}>
                         {syn.diagnostic_hint}
                       </p>
                     </div>

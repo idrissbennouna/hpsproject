@@ -22,7 +22,7 @@
   },
   "ED": {
     "title": "Réponse HSM ED (commande EC)",
-    "description": "ED est le code de réponse associé à la commande EC (Generate/Verify ARQC et opérations liées).",
+    "description": "ED est le code de réponse associé à la commande EC (Verify an Interchange PIN Using the ABA PVV Method).",
     "meaning": "Toute réponse ED avec un sous-code d'erreur indique un échec de l'opération EC côté payShield.",
     "diagnostic_hint": "Lire le sous-code (ex. ED05, ED15) dans la table d'erreurs ED du document PUGD0537-004 Core Host Commands V1.",
     "source": "hsm_error_placeholder.json / PUGD0537 / command_response_map.json"
@@ -36,7 +36,7 @@
   },
   "EC": {
     "title": "Commande HSM EC",
-    "description": "Commande host EC (payShield) — génération / vérification cryptographique (ARQC, etc.).",
+    "description": "Commande host EC (payShield) — Verify an Interchange PIN Using the ABA PVV Method.",
     "meaning": "La réponse attendue est ED. Un HsmResultCode non-00 ou une réponse ED avec erreur signale un échec.",
     "diagnostic_hint": "Analyser le buffer FROM HSM (ED…) et la table d'erreurs associée dans PUGD0537-004 Core Host Commands V1.",
     "source": "hsm_error_placeholder.json / PUGD0537 / command_response_map.json"
