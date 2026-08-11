@@ -43,10 +43,62 @@ function FunctionDocModal({ functionName, sessionId, onClose }) {
           <h4 className="func-modal-title" style={{ margin: 0, fontSize: "17px", fontWeight: "700", color: "#1e293b" }}>
             {functionName}
           </h4>
-          {docData && docData.found && (docData.excel_source || docData.excel_path) && (
-            <div className="func-modal-subtitle" style={{ fontSize: "12px", color: "#64748b", fontWeight: "500" }}>
-              {docData.excel_source}{docData.excel_path ? ` / ${docData.excel_path}` : ""}
-            </div>
+          {/* Badge doc_source — remplace / complète le sous-titre Excel */}
+          {docData && (
+            <>
+              {docData.doc_source === "excel" && (
+                <div style={{
+                  display: "inline-flex", alignItems: "center", gap: "4px",
+                  fontSize: "11px", fontWeight: "700",
+                  color: "#166534",
+                  background: "#dcfce7",
+                  border: "1px solid #86efac",
+                  borderRadius: "20px",
+                  padding: "2px 10px",
+                  marginTop: "2px",
+                }}>
+                  ✅ Spec_PowerCARD.xlsx
+                  {docData.excel_source || docData.excel_path ? (
+                    <span style={{ fontWeight: 500, color: "#15803d" }}>
+                      {docData.excel_source}{docData.excel_path ? ` / ${docData.excel_path}` : ""}
+                    </span>
+                  ) : null}
+                </div>
+              )}
+              {docData.doc_source === "rag_session" && (
+                <div style={{
+                  display: "inline-flex", alignItems: "center", gap: "4px",
+                  fontSize: "11px", fontWeight: "700",
+                  color: "#1e40af",
+                  background: "#dbeafe",
+                  border: "1px solid #93c5fd",
+                  borderRadius: "20px",
+                  padding: "2px 10px",
+                  marginTop: "2px",
+                }}>
+                  📄 Document de session
+                </div>
+              )}
+              {docData.doc_source === "ai_inferred" && (
+                <div style={{
+                  display: "inline-flex", alignItems: "center", gap: "4px",
+                  fontSize: "11px", fontWeight: "700",
+                  color: "#92400e",
+                  background: "#fef3c7",
+                  border: "1px solid #fcd34d",
+                  borderRadius: "20px",
+                  padding: "2px 10px",
+                  marginTop: "2px",
+                }}>
+                  🤖 Réponse IA — Non documenté officiellement
+                </div>
+              )}
+              {!docData.doc_source && docData.found && (docData.excel_source || docData.excel_path) && (
+                <div className="func-modal-subtitle" style={{ fontSize: "12px", color: "#64748b", fontWeight: "500" }}>
+                  {docData.excel_source}{docData.excel_path ? ` / ${docData.excel_path}` : ""}
+                </div>
+              )}
+            </>
           )}
           <button className="func-modal-close" style={{ position: "absolute", right: "22px", top: "18px" }} onClick={onClose} aria-label="Fermer">✕</button>
         </div>
@@ -67,6 +119,28 @@ function FunctionDocModal({ functionName, sessionId, onClose }) {
           {/* Cas : fonction documentée */}
           {!loading && !error && docData && docData.found && (
             <>
+              {/* Avertissement IA pour doc_source ai_inferred */}
+              {docData.doc_source === "ai_inferred" && (
+                <div style={{
+                  background: "linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%)",
+                  border: "1.5px solid #f59e0b",
+                  borderRadius: "10px",
+                  padding: "10px 14px",
+                  fontSize: "12.5px",
+                  color: "#78350f",
+                  lineHeight: "1.55",
+                  display: "flex",
+                  gap: "8px",
+                  alignItems: "flex-start",
+                }}>
+                  <span style={{ fontSize: "16px", flexShrink: 0 }}>⚠️</span>
+                  <span>
+                    <strong>Information générée par IA.</strong> Cette fonction n’est pas répertoriée dans
+                    Spec_PowerCARD.xlsx. La documentation ci-dessous a été générée par IA à partir de
+                    conventions monétiques connues — <strong>à vérifier avant utilisation.</strong>
+                  </span>
+                </div>
+              )}
               {/* Section Description */}
               <div className="func-desc-section" style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                 <h5 style={{ margin: 0, fontSize: "12px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b" }}>

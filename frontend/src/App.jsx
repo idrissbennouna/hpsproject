@@ -333,6 +333,7 @@ function App() {
 
   // États module Logs
   const [file, setFile] = useState(null);
+  const [isDragging, setIsDragging] = useState(false);
   const [docFile, setDocFile] = useState(null);
   const [selectedSpecHash, setSelectedSpecHash] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -350,8 +351,50 @@ function App() {
   const [docsKey, setDocsKey] = useState(0);
   const [docsInitialConv, setDocsInitialConv] = useState(null);
 
+  // Accepted trace-file extensions (case-insensitive check done via .toLowerCase())
+  const TRACE_EXTENSIONS = [".txt", ".trc", ".trc68", ".log", ".dat"];
+  const isTraceFile = (f) =>
+    TRACE_EXTENSIONS.some((ext) => f.name.toLowerCase().endsWith(ext)) ||
+    f.name.toLowerCase().includes(".trc");
+
   const handleFileChange = (e) => {
-    setFile(e.target.files[0]);
+    const selected = e.target.files[0];
+    if (!selected) return;
+    if (!isTraceFile(selected)) {
+      setError(
+        `Extension non supportée : "${selected.name}". Formats acceptés : .txt, .trc, .trc68, .log, .dat (insensible à la casse).`
+      );
+      return;
+    }
+    setFile(selected);
+    setError("");
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    const dropped = e.dataTransfer.files[0];
+    if (!dropped) return;
+    if (!isTraceFile(dropped)) {
+      setError(
+        `Extension non supportée : "${dropped.name}". Formats acceptés : .txt, .trc, .trc68, .log, .dat (insensible à la casse).`
+      );
+      return;
+    }
+    setFile(dropped);
     setError("");
   };
 
@@ -593,20 +636,33 @@ function App() {
                 <h3 className="card-title"> Configuration de l'Analyse</h3>
 
                 <div className="form-group">
-                  <label className="label">Fichier de traces réelles (.TXT) :</label>
-                  <div className="file-upload-box">
+                  <label className="label">Fichier de traces (.TXT, .TRC, .TRC68, .LOG…) :</label>
+                  <div
+                    className={`file-upload-box${isDragging ? " file-upload-box--dragging" : ""}`}
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                  >
                     <input
                       type="file"
-                      accept=".TXT,.txt"
+                      accept="*"
                       onChange={handleFileChange}
                       className="file-input"
                       id="file-upload"
                     />
                     <label htmlFor="file-upload" className="file-label">
-                      <span></span>
                       <span>
-                        {file ? ` ${file.name}` : "Glisser ou charger un fichier de logs"}
+                        {isDragging
+                          ? "Déposez le fichier ici…"
+                          : file
+                          ? ` ${file.name}`
+                          : "Glisser-déposer ou cliquer pour charger un fichier de traces"}
                       </span>
+                      {!file && !isDragging && (
+                        <span style={{ fontSize: "11px", color: "#9ca3af" }}>
+                          .txt · .trc · .trc68 · .log · .dat (insensible à la casse)
+                        </span>
+                      )}
                     </label>
                   </div>
                 </div>

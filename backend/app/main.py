@@ -510,17 +510,20 @@ async def analyze_logs(
     job_id: Optional[str] = Form(None)
 ):
     """
-    Reçoit un fichier de traces (.TXT, .LOG, .TRC, .DAT), analyse son contenu
+    Reçoit un fichier de traces (.TXT, .TRC, .TRC68, .LOG, .DAT), analyse son contenu
     via le graphe d'agents et produit un rapport PDF.
     Accepte facultativement un fichier de spécification (PDF) à uploader OU
     un file_hash d'un document déjà indexé (réutilisation sans ré-embedding).
     """
     safe_filename = Path(file.filename or "upload").name
     filename_lower = safe_filename.lower()
-    is_trace_file = any(filename_lower.endswith(ext) for ext in ('.txt', '.log', '.trc', '.dat')) or '.trc' in filename_lower
+    is_trace_file = (
+        any(filename_lower.endswith(ext) for ext in ('.txt', '.log', '.trc', '.trc68', '.dat'))
+        or '.trc' in filename_lower
+    )
 
     if not is_trace_file:
-        raise HTTPException(status_code=400, detail="Seuls les fichiers de traces (.TXT, .LOG, .TRC, .DAT) sont acceptés.")
+        raise HTTPException(status_code=400, detail="Seuls les fichiers de traces (.TXT, .TRC, .TRC68, .LOG, .DAT) sont acceptés.")
 
     active_job_id = job_id or f"job_{uuid.uuid4().hex[:12]}"
     from app.services.job_tracker import create_job, update_job
@@ -802,20 +805,23 @@ async def upload_validation_file(
     session_id: str = Form(...)
 ):
     """
-    Re�oit un fichier (.TXT, .PDF, .XLSX), extrait son texte brut,
-    et l'enregistre en m�moire sous le session_id fourni.
+    Reçoit un fichier (.TXT, .PDF, .XLSX, .TRC68), extrait son texte brut,
+    et l'enregistre en mémoire sous le session_id fourni.
     """
     safe_filename = Path(file.filename or "upload").name
     filename_lower = safe_filename.lower()
 
-    is_trace_file = any(filename_lower.endswith(ext) for ext in ('.txt', '.log', '.trc', '.dat')) or '.trc' in filename_lower
+    is_trace_file = (
+        any(filename_lower.endswith(ext) for ext in ('.txt', '.log', '.trc', '.trc68', '.dat'))
+        or '.trc' in filename_lower
+    )
     is_pdf_file = filename_lower.endswith('.pdf')
     is_excel_file = filename_lower.endswith('.xlsx') or filename_lower.endswith('.xls')
 
     if not (is_trace_file or is_pdf_file or is_excel_file):
         raise HTTPException(
             status_code=400,
-            detail="Seuls les formats de fichiers de trace (.TXT, .LOG, .TRC), .PDF et .XLSX sont support�s."
+            detail="Seuls les formats de fichiers de trace (.TXT, .TRC, .TRC68, .LOG, .DAT), .PDF et .XLSX sont supportés."
         )
 
     try:
@@ -1054,16 +1060,16 @@ async def get_function_doc(function_name: str, session_id: Optional[str] = None)
     Retourne la documentation d'une fonction PowerCARD enrichie par LLM (4 sections structurées).
     Utilise un cache mémoire par (function_name, session_id) pour éviter les appels LLM répétés.
 
-    Logique :
-    1. Vérifie d'abord si la fonction est dans Spec_PowerCARD.xlsx (court-circuit).
-       → Si ABSENTE : retourne immédiatement found=False SANS aucun appel RAG ni LLM.
-       → Si PRÉSENTE : charge la doc Excel, optionnellement enrichit via RAG session, puis LLM.
+    Hiérarchie à 3 niveaux :
+    1. Excel Spec_PowerCARD.xlsx  — toujours tenté en premier
+    2. RAG session (PDF joint)    — toujours tenté, indépendamment de l'Excel
+    3. LLM — connaissance générale PowerCARD/ISO 8583 — si niveaux 1+2 vides
 
-    Structure de réponse :
-    - found: bool
-    - llm_structured: { description, call_context, failure_meaning, diagnostic_hint }
-    - raw_sources_count: int
-    - message: str (si not found)
+    Nouveau champ de réponse : "doc_source"
+      "excel"      — documenté dans Spec_PowerCARD.xlsx
+      "rag_session" — trouvé dans le PDF de session
+      "ai_inferred" — généré par IA, non documenté officiellement
+      "not_found"  — aucune source, même le LLM ne peut pas aider
     """
     if not function_name or not function_name.strip():
         raise HTTPException(status_code=400, detail="Le nom de la fonction est requis.")
@@ -1075,69 +1081,60 @@ async def get_function_doc(function_name: str, session_id: Optional[str] = None)
     if cache_key in _FUNC_DOC_CACHE:
         return _FUNC_DOC_CACHE[cache_key]
 
-    # ── ÉTAPE 0 : Vérification Excel en premier (court-circuit anti-RAG hors-sujet) ──
-    # Si la fonction n'est PAS dans Spec_PowerCARD.xlsx, on retourne immédiatement
-    # "non documentée" sans aucun appel RAG ni LLM. Cela évite les faux positifs
-    # sémantiques (ex: swimon_check_msg_id qui remontait du contenu sur les MTI/ISO).
-    try:
-        from app.services.spec_loader import get_monitored_function_names, load_function_specs
-        monitored_names = get_monitored_function_names()
-        is_in_excel = safe_name in monitored_names
-    except Exception as e:
-        print(f"[WARN] get_function_doc Excel check failed for '{safe_name}': {e}")
-        is_in_excel = False
+    raw_content_parts = []
+    doc_source = "not_found"  # sera mis à jour au fur et à mesure
 
-    if not is_in_excel:
-        result = {
-            "function_name": safe_name,
-            "found": False,
-            "excel_source": None,
-            "excel_path": None,
-            "excel_description": None,
-            "excel_exception": None,
-            "llm_structured": None,
-            "raw_sources_count": 0,
-            "message": (
-                "Cette fonction n'est pas documentée dans Spec_PowerCARD.xlsx. "
-                "Aucune information sur ses conditions d'échec n'est disponible."
-            ),
-        }
-        _FUNC_DOC_CACHE[cache_key] = result
-        return result
-
-    # ── EXTRACTION directe de la colonne Exception Excel (Partie C) ─────────────
-    # Récupère le texte brut de la colonne "Exception" tel que saisit dans le fichier Excel.
-    # C'est la source la plus fiable pour expliquer dans quelles conditions la fonction échoue.
+    # ── NIVEAU 1 : Excel Spec_PowerCARD.xlsx ─────────────────────────────────────
+    # Toujours tenté en premier. Si absent/vide → on passe au niveau 2 sans retourner not_found.
     _excel_source = ""
     _excel_path = ""
     _excel_description = ""
     _excel_exception = None
-    try:
-        from app.services.spec_loader import load_function_specs
-        _specs = load_function_specs()
-        _spec_entry = _specs.get(safe_name, {})
-        _excel_source = _spec_entry.get("source", "").strip()
-        _excel_path = _spec_entry.get("path", "").strip()
-        _excel_description = _spec_entry.get("description", "").strip()
-        _raw_exception = _spec_entry.get("exception", "").strip()
-        if _raw_exception and _raw_exception.lower() not in ("none", "n/a", "-", ""):
-            _excel_exception = _raw_exception
-    except Exception as _e:
-        print(f"[WARN] get_function_doc Excel exception extraction failed for '{safe_name}': {_e}")
-    raw_content_parts = []
+    _is_in_excel = False
 
-    # 1a. Documentation Excel directe (source prioritaire, exacte)
     try:
-        from app.services.spec_loader import get_spec_context_for_functions
-        excel_doc = get_spec_context_for_functions([safe_name])
-        if excel_doc and excel_doc.strip():
-            raw_content_parts.append(f"[Spec_PowerCARD.xlsx]\n{excel_doc.strip()}")
+        from app.services.spec_loader import load_function_specs, get_monitored_function_names, get_spec_context_for_functions
+        monitored_names = get_monitored_function_names()
+        _is_in_excel = safe_name in monitored_names
     except Exception as e:
-        print(f"[WARN] get_function_doc Excel spec context failed for '{safe_name}': {e}")
+        print(f"[WARN] get_function_doc Excel check failed for '{safe_name}': {e}")
 
-    # 1b. Recherche RAG dans le document de session (seulement si la fonction est documentée)
-    # Cette recherche est pertinente ici car on cherche des infos sur une fonction
-    # CONFIRMÉE dans le référentiel — le RAG peut apporter du contexte PDF complémentaire.
+    if _is_in_excel:
+        try:
+            from app.services.spec_loader import load_function_specs
+            _specs = load_function_specs()
+            _spec_entry = _specs.get(safe_name, {})
+            _excel_source = _spec_entry.get("source", "").strip()
+            _excel_path = _spec_entry.get("path", "").strip()
+            _excel_description = _spec_entry.get("description", "").strip()
+            _raw_exception = _spec_entry.get("exception", "").strip()
+            if _raw_exception and _raw_exception.lower() not in ("none", "n/a", "-", ""):
+                _excel_exception = _raw_exception
+        except Exception as _e:
+            print(f"[WARN] get_function_doc Excel exception extraction failed for '{safe_name}': {_e}")
+
+        try:
+            from app.services.spec_loader import get_spec_context_for_functions
+            excel_doc = get_spec_context_for_functions([safe_name])
+            if excel_doc and excel_doc.strip():
+                raw_content_parts.append(f"[Spec_PowerCARD.xlsx]\n{excel_doc.strip()}")
+                doc_source = "excel"
+        except Exception as e:
+            print(f"[WARN] get_function_doc Excel spec context failed for '{safe_name}': {e}")
+
+        # Fallback Excel textuel si get_spec_context_for_functions n'a rien retourné
+        if not raw_content_parts:
+            try:
+                from app.rag.retriever import _local_excel_fallback
+                excel_result = await run_in_threadpool(_local_excel_fallback, safe_name, 3)
+                if excel_result and excel_result.strip():
+                    raw_content_parts.append(f"[Spec_PowerCARD.xlsx]\n{excel_result.strip()}")
+                    doc_source = "excel"
+            except Exception as e:
+                print(f"[WARN] get_function_doc Excel fallback failed for '{safe_name}': {e}")
+
+    # ── NIVEAU 2 : RAG session (PDF joint) ───────────────────────────────────────
+    # Toujours tenté, indépendamment de l'Excel. Apporte du contexte PDF complémentaire.
     if session_id and session_id.strip():
         try:
             from app.rag.retriever import get_session_vectorstore
@@ -1155,88 +1152,176 @@ async def get_function_doc(function_name: str, session_id: Optional[str] = None)
                     pg_str = f" (p. {pg})" if pg else ""
                     snippets.append(f"[{src}{pg_str}]\n{d.page_content.strip()[:600]}")
                 raw_content_parts.append("\n\n".join(snippets))
+                # RAG lève le niveau uniquement si Excel n'a rien trouvé
+                if doc_source == "not_found":
+                    doc_source = "rag_session"
         except Exception as e:
             print(f"[WARN] get_function_doc session RAG failed for '{safe_name}': {e}")
 
-    # Cas de secours : Excel trouvé dans monitored_names mais get_spec_context_for_functions
-    # n'a rien retourné — on tente le fallback de recherche textuelle Excel
+    # ── NIVEAU 3 : LLM — connaissance générale PowerCARD / ISO 8583 ────────────
+    # Déclenché UNIQUEMENT si niveaux 1 + 2 n'ont produit aucun contenu.
+    _llm_ai_generated = False
     if not raw_content_parts:
         try:
-            from app.rag.retriever import _local_excel_fallback
-            excel_result = await run_in_threadpool(_local_excel_fallback, safe_name, 3)
-            if excel_result and excel_result.strip():
-                raw_content_parts.append(f"[Spec_PowerCARD.xlsx]\n{excel_result.strip()}")
-        except Exception as e:
-            print(f"[WARN] get_function_doc Excel fallback failed for '{safe_name}': {e}")
+            from app.core.agent_graph import llm
+            from app.services.llm_util import invoke_llm_with_retry
+            from langchain_core.prompts import ChatPromptTemplate
+            import json as _json
 
-    # Cas improbable : fonction dans l'Excel mais aucun contenu récupéré
+            infer_prompt = ChatPromptTemplate.from_messages([
+                ("system",
+                    "Tu es un expert en systèmes monétiques PowerCARD (HPS) et en ISO 8583.\n"
+                    "La fonction demandée n'est pas répertoriée dans Spec_PowerCARD.xlsx ni dans le document de session.\n"
+                    "Génère une documentation PROBABLE basée sur ta connaissance des conventions PowerCARD et ISO 8583.\n"
+                    "Retourne UNIQUEMENT ce JSON valide (sans texte autour) :\n"
+                    "{{\n"
+                    '  "description": "<1-2 phrases sur le rôle probable de cette fonction>",\n'
+                    '  "call_context": "<dans quel flux ou contexte elle est probablement appelée>",\n'
+                    '  "failure_meaning": "<que signifie un résultat -1 ou NOK pour cette fonction>",\n'
+                    "  \"diagnostic_hint\": \"<premi\u00e8re chose \u00e0 v\u00e9rifier en cas d'\u00e9chec>\"\\n"
+                    "}}\n"
+                    "Si tu n'as vraiment aucune connaissance de cette fonction, réponds null."
+                ),
+                ("user", "Fonction PowerCARD : {function_name}"),
+            ])
+
+            llm_resp = invoke_llm_with_retry(
+                llm,
+                infer_prompt.format_messages(function_name=safe_name)
+            )
+            resp_text = str(getattr(llm_resp, "content", llm_resp) or "").strip()
+            if resp_text.startswith("```"):
+                resp_text = re.sub(r"^```(?:json)?\s*", "", resp_text, flags=re.IGNORECASE)
+                resp_text = re.sub(r"\s*```$", "", resp_text).strip()
+
+            if resp_text.lower() not in ("null", "none", ""):
+                parsed_inferred = _json.loads(resp_text)
+                if isinstance(parsed_inferred, dict) and "description" in parsed_inferred:
+                    # Construire du contenu brut synthétique pour l'étape d'enrichissement LLM
+                    raw_content_parts.append(
+                        f"[Connaissance générale PowerCARD/ISO 8583 — Non documenté dans Spec_PowerCARD.xlsx]\n"
+                        f"Description : {parsed_inferred.get('description', '')}\n"
+                        f"Contexte d'appel : {parsed_inferred.get('call_context', '')}\n"
+                        f"Signification d'échec : {parsed_inferred.get('failure_meaning', '')}\n"
+                        f"Piste diagnostique : {parsed_inferred.get('diagnostic_hint', '')}"
+                    )
+                    doc_source = "ai_inferred"
+                    _llm_ai_generated = True
+        except Exception as e:
+            print(f"[WARN] get_function_doc AI inference failed for '{safe_name}': {e}")
+
+    # ── Cas not_found : même le LLM n'a pas pu aider ────────────────────────────
     if not raw_content_parts:
         result = {
             "function_name": safe_name,
             "found": False,
+            "doc_source": "not_found",
+            "excel_source": None,
+            "excel_path": None,
+            "excel_description": None,
+            "excel_exception": None,
             "llm_structured": None,
             "raw_sources_count": 0,
-            "message": f"Documentation non disponible pour la fonction '{safe_name}' — elle n'est pas répertoriée dans Spec_PowerCARD.xlsx ni dans le document de session."
+            "message": (
+                "Cette fonction n'est pas documentée dans Spec_PowerCARD.xlsx ni dans le document de session. "
+                "Aucune information générale n'a pu être générée."
+            ),
         }
         _FUNC_DOC_CACHE[cache_key] = result
         return result
 
-    # 3. Enrichissement LLM : transformer la doc brute en 4 sections structurées
+    # ── Enrichissement LLM structuré (4 sections) — commun à tous les niveaux ──
     combined_raw = "\n\n---\n\n".join(raw_content_parts)
     llm_structured = None
 
-    try:
-        from app.core.agent_graph import llm
-        from app.services.llm_util import invoke_llm_with_retry
-        from langchain_core.prompts import ChatPromptTemplate
-        import json as _json
+    if not _llm_ai_generated:
+        # Pour les niveaux 1+2, on enrichit avec le prompt 4-sections
+        try:
+            from app.core.agent_graph import llm
+            from app.services.llm_util import invoke_llm_with_retry
+            from langchain_core.prompts import ChatPromptTemplate
+            import json as _json
 
-        doc_prompt = ChatPromptTemplate.from_messages([
-            ("system", (
-                "Tu es un expert en analyse de spécifications de systèmes monétiques PowerCARD (HPS).\n"
-                "À partir de la documentation brute fournie sur une fonction PowerCARD, génère un OBJET JSON STRICTEMENT VALIDE "
-                "avec exactement ces 4 clés (rien d'autre, pas de markdown, pas de texte en dehors du JSON) :\n"
-                # CORRECTIF : les accolades JSON littérales doivent être doublées ({{ }}) dans un
-                # template LangChain pour ne pas être interprétées comme des variables de template.
-                "{{\n"
-                '  "description": "<1-2 phrases : que fait cette fonction dans le système PowerCARD>",\n'
-                '  "call_context": "<1-2 phrases : dans quel flux ou contexte cette fonction est-elle appelée>",\n'
-                '  "failure_meaning": "<1-2 phrases : que signifie un résultat -1, -2 ou NOK pour cette fonction précise>",\n'
-                '  "diagnostic_hint": "<1-2 phrases : quelle est la première chose à vérifier en cas d\'échec de cette fonction>"\n'
-                "}}\n"
-                "Si la documentation ne contient pas suffisamment d'information pour remplir une section, "
-                "indique 'Information non disponible dans la documentation fournie.' pour cette section.\n"
-                "RÉPONDS UNIQUEMENT avec l'objet JSON valide, sans aucun texte autour."
-            )),
-            ("user", (
-                # CORRECTIF : ne jamais mélanger f-string Python et variables LangChain {var} dans
-                # la même chaîne. Passer function_name comme variable nommée via format_messages().
-                "Fonction : {function_name}\n\n"
-                "Documentation brute :\n{raw_doc}"
-            )),
-        ])
+            doc_prompt = ChatPromptTemplate.from_messages([
+                ("system", (
+                    "Tu es un expert en analyse de spécifications de systèmes monétiques PowerCARD (HPS).\n"
+                    "À partir de la documentation brute fournie sur une fonction PowerCARD, génère un OBJET JSON STRICTEMENT VALIDE "
+                    "avec exactement ces 4 clés (rien d'autre, pas de markdown, pas de texte en dehors du JSON) :\n"
+                    "{{\n"
+                    '  "description": "<1-2 phrases : que fait cette fonction dans le système PowerCARD>",\n'
+                    '  "call_context": "<1-2 phrases : dans quel flux ou contexte cette fonction est-elle appelée>",\n'
+                    '  "failure_meaning": "<1-2 phrases : que signifie un résultat -1, -2 ou NOK pour cette fonction précise>",\n'
+                    "  \"diagnostic_hint\": \"<1-2 phrases : quelle est la premi\u00e8re chose \u00e0 v\u00e9rifier en cas d'\u00e9chec de cette fonction>\"\\n"
+                    "}}\n"
+                    "Si la documentation ne contient pas suffisamment d'information pour remplir une section, "
+                    "indique 'Information non disponible dans la documentation fournie.' pour cette section.\n"
+                    "RÉPONDS UNIQUEMENT avec l'objet JSON valide, sans aucun texte autour."
+                )),
+                ("user", (
+                    "Fonction : {function_name}\n\n"
+                    "Documentation brute :\n{raw_doc}"
+                )),
+            ])
 
-        llm_resp = invoke_llm_with_retry(
-            llm,
-            doc_prompt.format_messages(function_name=safe_name, raw_doc=combined_raw[:3000])
-        )
-        resp_text = str(getattr(llm_resp, "content", llm_resp) or "").strip()
-        if resp_text.startswith("```"):
-            resp_text = re.sub(r"^```(?:json)?\s*", "", resp_text, flags=re.IGNORECASE)
-            resp_text = re.sub(r"\s*```$", "", resp_text).strip()
-        parsed = _json.loads(resp_text)
-        if isinstance(parsed, dict) and "description" in parsed:
-            llm_structured = parsed
-    except Exception as e:
-        print(f"[WARN] get_function_doc LLM enrichment failed for '{safe_name}': {e}")
+            llm_resp = invoke_llm_with_retry(
+                llm,
+                doc_prompt.format_messages(function_name=safe_name, raw_doc=combined_raw[:3000])
+            )
+            resp_text = str(getattr(llm_resp, "content", llm_resp) or "").strip()
+            if resp_text.startswith("```"):
+                resp_text = re.sub(r"^```(?:json)?\s*", "", resp_text, flags=re.IGNORECASE)
+                resp_text = re.sub(r"\s*```$", "", resp_text).strip()
+            parsed = _json.loads(resp_text)
+            if isinstance(parsed, dict) and "description" in parsed:
+                llm_structured = parsed
+        except Exception as e:
+            print(f"[WARN] get_function_doc LLM enrichment failed for '{safe_name}': {e}")
+    else:
+        # Pour le niveau 3 (ai_inferred), le premier appel LLM a déjà produit les 4 sections
+        try:
+            from app.core.agent_graph import llm
+            from app.services.llm_util import invoke_llm_with_retry
+            from langchain_core.prompts import ChatPromptTemplate
+            import json as _json
+
+            # Re-parse le contenu synthétique pour extraire les 4 sections structurées
+            doc_prompt2 = ChatPromptTemplate.from_messages([
+                ("system",
+                    "Tu es un expert en systèmes monétiques PowerCARD (HPS) et ISO 8583.\n"
+                    "Génère EXACTEMENT ce JSON (sans texte autour) à partir du contenu fourni :\n"
+                    "{{\n"
+                    '  "description": "<1-2 phrases>",\n'
+                    '  "call_context": "<1-2 phrases>",\n'
+                    '  "failure_meaning": "<1-2 phrases>",\n'
+                    '  "diagnostic_hint": "<1-2 phrases>"\n'
+                    "}}\n"
+                    "IMPORTANT : commence par préciser que cette information est générée par IA — non officielle."
+                ),
+                ("user", "Fonction : {function_name}\n\nContenu :\n{raw_doc}"),
+            ])
+            llm_resp2 = invoke_llm_with_retry(
+                llm,
+                doc_prompt2.format_messages(function_name=safe_name, raw_doc=combined_raw[:2000])
+            )
+            resp_text2 = str(getattr(llm_resp2, "content", llm_resp2) or "").strip()
+            if resp_text2.startswith("```"):
+                resp_text2 = re.sub(r"^```(?:json)?\s*", "", resp_text2, flags=re.IGNORECASE)
+                resp_text2 = re.sub(r"\s*```$", "", resp_text2).strip()
+            parsed2 = _json.loads(resp_text2)
+            if isinstance(parsed2, dict) and "description" in parsed2:
+                llm_structured = parsed2
+        except Exception as e:
+            print(f"[WARN] get_function_doc AI structured enrichment failed for '{safe_name}': {e}")
 
     result = {
         "function_name": safe_name,
         "found": True,
+        "doc_source": doc_source,
+        "llm_ai_generated": _llm_ai_generated,
         "excel_source": _excel_source,
         "excel_path": _excel_path,
         "excel_description": _excel_description,
-        "excel_exception": _excel_exception,  # Colonne "Exception" brute de Spec_PowerCARD.xlsx
+        "excel_exception": _excel_exception,
         "llm_structured": llm_structured,
         "documentation": [
             {
@@ -1248,7 +1333,6 @@ async def get_function_doc(function_name: str, session_id: Optional[str] = None)
         "raw_sources_count": len(raw_content_parts),
     }
 
-    # Mettre en cache uniquement si on a trouvé des infos
     _FUNC_DOC_CACHE[cache_key] = result
     return result
 

@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -6,6 +7,35 @@ from typing import Dict, List, Any, Optional
 
 from app.services.spec_loader import get_monitored_function_names
 from app.services.field_validator import validate_transaction_fields
+
+_lp_logger = logging.getLogger(__name__)
+
+# ─── LLM local (instancié une seule fois pour le mode de secours) ─────────────
+try:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    from pydantic import SecretStr
+    from dotenv import load_dotenv
+    _LP_ENV = Path(__file__).resolve().parents[3] / ".env"
+    load_dotenv(dotenv_path=_LP_ENV, override=False)
+    _LP_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    _LP_MODEL   = (os.getenv("GEMINI_MODEL_NAME") or "gemini-2.0-flash").strip()
+    _lp_llm = (
+        ChatGoogleGenerativeAI(model=_LP_MODEL, temperature=0, google_api_key=SecretStr(_LP_API_KEY))
+        if _LP_API_KEY else None
+    )
+    if not _LP_API_KEY:
+        _lp_logger.warning("[log_parser] Clé API absente — mode de secours LLM désactivé.")
+except Exception as _lp_llm_err:
+    _lp_llm = None
+    _lp_logger.warning("[log_parser] Impossible d'initialiser le LLM de secours : %s", _lp_llm_err)
+
+# Motifs heuristiques pour décider si un fichier ressemble à une trace monétique
+_TRACE_HEURISTIC_RE = re.compile(
+    r"MTI|M\.T\.I|FLD\s*\(|DE\s*\d+|\bPAN\b|\bSTAN\b|\bRRN\b|0200|0210|0100|0110|1100|1110",
+    re.IGNORECASE,
+)
+# Nombre maximal de lignes à envoyer au LLM (tranche représentative)
+_LLM_FALLBACK_MAX_LINES = 200
 
 # --- Chargement du référentiel ISO 8583 (BASE I) ---
 ISO8583_REF_PATH = Path(__file__).resolve().parent.parent / "data" / "iso8583_field_reference.json"
@@ -43,25 +73,89 @@ RE_STAN = re.compile(r"INTERNAL STAN\}\s*\d+\s+(\S+)")
 RE_PAN = re.compile(r"PAN\}\s*\d+\s+(\S+)")
 RE_CARD_NUMBER = re.compile(r"CARD_NUMBER\}\s*\d+\s+(\S+)")
 
-# Format des dumps ISO bruts
-RE_FLD011_DUMP = re.compile(r"FLD\s*\(011\)\s*:\s*\(\d+\)\s*:\s*\[(\d+)\]")
-RE_FLD037_DUMP = re.compile(r"FLD\s*\(037\).*\[(\w+)\]")
-RE_FLD039_DUMP = re.compile(r"FLD\s*\(039\).*\[(\w+)\]")
-RE_MTI_1110 = re.compile(r"M\.T\.I\s*:\s*1110")
+# ── Regex MTI universelle (PowerCARD / POS / Mastercard) ────────────────────
+# Reconnaît : "M.T.I", "MTI", "Mti", "mti" (majuscules/minuscules, points optionnels)
+# Valeur : avec ou sans crochets [ ], 3 ou 4 chiffres
+_RE_MTI_LABEL = r"M\.?\s*T\.?\s*I\.?"
 
-# Extraction générique des champs ISO (pour alimenter le RAG et l'enrichissement)
-RE_FLD_GENERIC = re.compile(r"-\s*FLD\s*\((\d+)\)\s*:?\s*\((\d+)\)\s*:?\s*\[([^\]]*)\]")
+# Trigger de début de transaction : tiret optionnel + label MTI + valeur
+RE_START_TRANSACTION = re.compile(
+    rf"-\s*{_RE_MTI_LABEL}\s*:+\s*\[?(\d{{3,4}})\]?",
+    re.IGNORECASE,
+)
 
-# Identification de session et triggers de début de transaction
-RE_SESSION = re.compile(r"^\S+\s+\S+\s+\S+\s+(\S+?)\|")
-RE_START_TRANSACTION = re.compile(r"-\s*M\.T\.I\s*:\s*\[(\d{4})\]")
+# Extraction MTI (hors trigger de début) : label + valeur
+RE_MTI = re.compile(
+    rf"{_RE_MTI_LABEL}\s*:+\s*\[?(\d{{3,4}})\]?",
+    re.IGNORECASE,
+)
 
-# Extraction HSM & MTI
+# Détection MTI réponse 1110 (PowerCARD) — sert à indexer le code réponse
+RE_MTI_1110 = re.compile(
+    rf"{_RE_MTI_LABEL}\s*:+\s*\[?1110\]?",
+    re.IGNORECASE,
+)
+
+# ── Extraction générique des champs ISO ──────────────────────────────────────
+# FLD (NNN) PowerCARD  : "- FLD (037) : (012) : [value]"
+# DE  (NNN) Mastercard : "- DE (037) : (012) : [value]" ou variantes
+RE_FLD_GENERIC = re.compile(
+    r"-\s*(?:FLD|DE)\s*\((\d+)\)\s*:?\s*\((\d+|LLLVAR|LLVAR)\)\s*:?\s*\[([^\]]*)\]",
+    re.IGNORECASE,
+)
+
+# ── Dumps champs 011 / 037 / 039 (FLD ou DE, avec ou sans crochets) ──────────
+RE_FLD011_DUMP = re.compile(
+    r"(?:FLD|DE)\s*\(011\)\s*:?[^:]*:\s*\[?(\d+)\]?",
+    re.IGNORECASE,
+)
+RE_FLD037_DUMP = re.compile(
+    r"(?:FLD|DE)\s*\(037\).*?\[([^\]]+)\]",
+    re.IGNORECASE,
+)
+RE_FLD039_DUMP = re.compile(
+    r"(?:FLD|DE)\s*\(039\).*?\[([^\]]+)\]",
+    re.IGNORECASE,
+)
+
+# ── Identification de session ─────────────────────────────────────────────────
+RE_SESSION = re.compile(r"^[^|\s]+(?:\s+[^|\s]+)*\s+([^|\s]+)\|")
+
+# ── Extraction HSM ────────────────────────────────────────────────────────────
 RE_TO_HSM = re.compile(r"TO\s+HSM\s*:\s*(?:Len=\[\d+\]-->\s*Data=)?\s*(.*?)$", re.IGNORECASE)
 RE_FROM_HSM = re.compile(r"FROM\s+HSM\s*:\s*<--(.*?)$", re.IGNORECASE)
 RE_HSM_RESULT = re.compile(r"(?:HsmResultCode\s*=\s*|HSM_RESULT_CODE\s*\.*\s*\)\s*:\s*\[?)(\w+)", re.IGNORECASE)
-RE_MTI = re.compile(r"M\.T\.I\s*:\s*\[?(\d{4})\]?")
-HEARTBEAT_MTIS = {"0800", "0810"}
+
+# ── Classification heartbeat / network-management (règle ISO 8583) ───────────
+# ISO 8583 : le 1er chiffre du MTI est la « version », le 2e est la « classe ».
+# Classe 8 (0800–0810, 1800…) = Network Management / Heartbeat → pas financier.
+# Toute autre classe (0, 1, 2, 4…) = message financier ou administratif → à auditer.
+# On exclut AUSSI les MTI purement internes/non documentés qui ne sont pas des transactions.
+_HEARTBEAT_CLASSES = {"8"}   # chiffre des dizaines du MTI (position 1, 0-indexed)
+_EXPLICIT_HEARTBEAT_MTIS = {"0800", "0810", "1800", "1810", "2800", "2810"}
+
+
+def is_heartbeat_mti(mti: str) -> bool:
+    """
+    Retourne True si le MTI correspond à un message de Network Management
+    (heartbeat / test de lien) plutôt qu'à une transaction financière.
+
+    Règle ISO 8583 :
+      - MTI explicitement connus (0800, 0810, 1800, 1810, 2800, 2810)
+      - OU deuxième chiffre == '8' (classe Network Management)
+    Les messages financiers (classe 0, 1, 2) retournent False.
+    """
+    if not mti or not mti.isdigit():
+        return False
+    mti4 = mti.zfill(4)
+    if mti4 in _EXPLICIT_HEARTBEAT_MTIS:
+        return True
+    # Position 1 (0-indexed) = classe du message
+    return len(mti4) >= 2 and mti4[1] in _HEARTBEAT_CLASSES
+
+
+# Alias de rétrocompatibilité pour le code existant qui teste « mti_val in HEARTBEAT_MTIS »
+HEARTBEAT_MTIS = _EXPLICIT_HEARTBEAT_MTIS
 
 # Détection générique des fonctions en échec non documentées dans l'Excel
 # Capture : NomFonction ... NOK | ( NOK ) | (-1) | résultat -1 | result=-1 | != OK
@@ -309,6 +403,156 @@ class ParsedTransactionList(list):
         self.heartbeat_count = heartbeat_count
 
 
+# ─── Mode de secours LLM — format de trace non standard ──────────────────────
+_AI_FALLBACK_DISCLAIMER = (
+    "⚠️ Analyse réalisée en mode d'interprétation assistée par IA "
+    "— format de trace non standard détecté. "
+    "Les informations ci-dessous sont extraites par le LLM depuis le texte brut "
+    "et peuvent être moins précises qu'un parsing déterministe."
+)
+
+
+def _llm_fallback_parse(file_path: str, doc_session_id: Optional[str] = None) -> list:
+    """
+    Mode de secours : le parsing déterministe n'a extrait aucune transaction.
+    Envoie un extrait représentatif du fichier au LLM et lui demande
+    d'identifier les transactions, MTI, champs clés et alertes.
+
+    Retourne une liste de transactions au même schéma que parse_trace_file().
+    Chaque transaction est marquée avec llm_fallback=True et parsing_mode="ai_assisted".
+    """
+    if _lp_llm is None:
+        _lp_logger.warning("[log_parser] Mode de secours LLM ignoré : LLM non disponible.")
+        return []
+
+    # Lire le fichier et sélectionner les lignes pertinentes
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as fh:
+            all_lines = fh.readlines()
+    except Exception as e:
+        _lp_logger.warning("[log_parser] Impossible de lire '%s' pour le mode LLM : %s", file_path, e)
+        return []
+
+    # Filtrer les lignes qui contiennent des marqueurs monétiques
+    heuristic_lines = [
+        (i + 1, ln.rstrip())
+        for i, ln in enumerate(all_lines)
+        if _TRACE_HEURISTIC_RE.search(ln)
+    ]
+
+    if not heuristic_lines:
+        # Aucun motif monétique — le fichier n'est probablement pas une trace
+        _lp_logger.info("[log_parser] Aucun motif monétique détecté dans '%s' — mode LLM ignoré.", file_path)
+        return []
+
+    # Construire l'extrait à envoyer (max _LLM_FALLBACK_MAX_LINES lignes)
+    excerpt_lines = heuristic_lines[:_LLM_FALLBACK_MAX_LINES]
+    excerpt_text = "\n".join(f"{num}: {ln}" for num, ln in excerpt_lines)
+
+    prompt_system = (
+        "Tu es un expert en traces de systèmes monétiques (ISO 8583, PowerCARD HPS, Mastercard, Visa, POS).\n"
+        "On te donne un extrait d'un fichier de trace dont le format est non standard "
+        "(les parseurs regex habituels n'ont extrait aucune transaction).\n"
+        "Analyse le texte brut et extrait TOUTES les transactions monétiques détectables.\n"
+        "Pour chaque transaction, retourne un objet JSON avec les clés suivantes :\n"
+        "{\n"
+        '  "mti": "<code MTI ex: 0200>",\n'
+        '  "stan": "<STAN ou numéro de trace système>",\n'
+        '  "rrn": "<Retrieval Reference Number si présent>",\n'
+        '  "pan_masked": "<PAN masqué si présent>",\n'
+        '  "response_code": "<code réponse>",\n'
+        '  "processing_code": "<processing code ou DE3 si présent>",\n'
+        '  "fields": {"<numéro>": "<valeur>"},\n'
+        '  "failed_functions": ["<nom de fonction en échec si détectée>"],\n'
+        '  "alerts": ["<alerte ou anomalie détectée>"],\n'
+        '  "chronology": ["<événement clé en ordre chronologique>"]\n'
+        "}\n"
+        "Retourne UNIQUEMENT un tableau JSON valide (sans texte autour) : [{...}, {...}].\n"
+        "Si aucune transaction n'est identifiable, retourne [].\n"
+        "Ne suppose jamais de valeur inconnue — utilise null si une information est absente.\n"
+        "IMPORTANT : identifie le format de trace utilisé (FLD, DE, tag TLV, autre) et adapte ton extraction."
+    )
+    prompt_user = (
+        f"Fichier de trace (extrait, {len(excerpt_lines)} lignes avec motifs monétiques) :\n"
+        f"{excerpt_text}"
+    )
+
+    try:
+        from app.services.llm_util import invoke_llm_with_retry
+        resp = invoke_llm_with_retry(
+            _lp_llm,
+            [{"role": "system", "content": prompt_system},
+             {"role": "user", "content": prompt_user[:6000]}],  # garde-fou anti-context-overflow
+        )
+        raw = str(getattr(resp, "content", resp) or "").strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+            raw = re.sub(r"\s*```$", "", raw).strip()
+
+        llm_txs = json.loads(raw)
+        if not isinstance(llm_txs, list):
+            _lp_logger.warning("[log_parser] Mode LLM : réponse non-list : %s", type(llm_txs))
+            return []
+    except Exception as e:
+        _lp_logger.warning("[log_parser] Mode de secours LLM a échoué : %s", e)
+        return []
+
+    # Convertir la sortie LLM au schéma attendu par le pipeline
+    results = []
+    for i, ltx in enumerate(llm_txs, 1):
+        if not isinstance(ltx, dict):
+            continue
+        mti_val = str(ltx.get("mti") or "").strip() or None
+        is_hb = mti_val in HEARTBEAT_MTIS if mti_val else False
+        # Reconstruire all_fields depuis ltx["fields"]
+        all_fields = {}
+        for fnum, fval in (ltx.get("fields") or {}).items():
+            if fnum and fval is not None:
+                all_fields[str(fnum)] = {
+                    "value": str(fval),
+                    "declared_length": str(len(str(fval))),
+                    "name": f"Field {fnum}",
+                    "description": "Extrait par IA (format non standard)",
+                }
+        alerts = list(ltx.get("alerts") or [])
+        # Ajouter le disclaimer d'analyse IA dans les alertes
+        if _AI_FALLBACK_DISCLAIMER not in alerts:
+            alerts.insert(0, _AI_FALLBACK_DISCLAIMER)
+
+        chronology_lines = list(ltx.get("chronology") or [])
+        if _AI_FALLBACK_DISCLAIMER not in chronology_lines:
+            chronology_lines.insert(0, _AI_FALLBACK_DISCLAIMER)
+
+        results.append({
+            "identifiers": {
+                "transaction_id": f"LLM-TXN-{i}",
+                "stan": str(ltx.get("stan") or "") or None,
+                "pan": str(ltx.get("pan_masked") or "") or None,
+                "rrn": str(ltx.get("rrn") or "") or None,
+                "response_code": str(ltx.get("response_code") or "") or None,
+            },
+            "mti": mti_val,
+            "mti_description": get_mti_info(mti_val) if mti_val else "Format non standard",
+            "all_fields": all_fields,
+            "processing_code": str(ltx.get("processing_code") or "") or None,
+            "chronology": "\n".join(f"- {ev}" for ev in chronology_lines),
+            "alerts_found": alerts,
+            "format_alerts": [],
+            "failed_functions": list(ltx.get("failed_functions") or []),
+            "successful_functions": [],
+            "hsm_calls": [],
+            "is_heartbeat": is_hb,
+            "llm_fallback": True,
+            "parsing_mode": "ai_assisted",
+        })
+
+    _lp_logger.info(
+        "[log_parser] Mode de secours LLM : %d transaction(s) extraite(s) depuis '%s'.",
+        len(results), file_path,
+    )
+    return results
+
+
 def parse_trace_file(
     file_path: str,
     spec_path: Optional[str] = None,
@@ -435,7 +679,7 @@ def parse_trace_file(
                         f"{prefix_str}Message Réseau Entrant (Incoming Request) MTI [{mti_val}] ({mti_desc}) détecté.",
                         line_num=line_idx, timestamp=timestamp, level=level
                     )
-                    if mti_val in HEARTBEAT_MTIS:
+                    if is_heartbeat_mti(mti_val):
                         tx["is_heartbeat"] = True
                     sessions[session_id] = tx
                     continue
@@ -452,7 +696,7 @@ def parse_trace_file(
                     mti_val = mti_match.group(1)
                     tx["mti"] = mti_val
                     tx["mti_description"] = get_mti_info(mti_val)
-                    if mti_val in HEARTBEAT_MTIS:
+                    if is_heartbeat_mti(mti_val):
                         tx["is_heartbeat"] = True
 
                 if HEARTBEAT_FIELD in line and HEARTBEAT_VALUE in line:
@@ -495,11 +739,15 @@ def parse_trace_file(
                     enriched_event_added = True
 
                 # Extraction RAG & Enrichissement ISO 8583 généralisé via Référentiel
+                # Gère FLD (PowerCARD) et DE (Mastercard/réseau)
                 match = RE_FLD_GENERIC.search(line)
                 if match:
                     field_number, declared_length, value = match.groups()
                     field_info = get_iso_field_info(field_number)
-                    field_name = field_info["name"] if field_info else f"FLD {field_number}"
+                    # Détecter le préfixe réel (FLD ou DE) pour les libellés
+                    _pfx_m = re.search(r"(FLD|DE)\s*\(", line, re.IGNORECASE)
+                    field_prefix = (_pfx_m.group(1).upper() if _pfx_m else "FLD")
+                    field_name = field_info["name"] if field_info else f"{field_prefix} {field_number}"
                     field_desc = field_info["description"] if field_info else "Champ ISO 8583"
 
                     tx["all_fields"][field_number] = {
@@ -507,13 +755,14 @@ def parse_trace_file(
                         "declared_length": declared_length,
                         "name": field_name,
                         "description": field_desc,
+                        "field_prefix": field_prefix,
                     }
 
-                    # En mode compact ou full, enrichir la chronologie pour les champs ISO notables (autres que 037/039 déjà traités)
+                    # Enrichir la chronologie pour les champs notables (autres que 037/039 déjà traités)
                     if field_number not in ["037", "039"]:
                         _add_event(
                             tx,
-                            f"{prefix_str}Champ [FLD {field_number}] ({field_name} - {field_desc}) : [{value}]",
+                            f"{prefix_str}Champ [{field_prefix} {field_number}] ({field_name} - {field_desc}) : [{value}]",
                             line_num=line_idx, timestamp=timestamp, level=level
                         )
                         enriched_event_added = True
@@ -689,7 +938,7 @@ def parse_trace_file(
         all_transactions = _merge_request_response_pairs(all_transactions)
 
     except Exception as e:
-        print(f"Erreur lors du parsing de la trace: {str(e)}")
+        _lp_logger.error("[log_parser] Erreur lors du parsing de la trace '%s': %s", file_path, e)
         return ParsedTransactionList([])
 
     # Décompte exact des transactions heartbeat identifiées
@@ -703,6 +952,31 @@ def parse_trace_file(
         ]
     else:
         final_transactions = all_transactions
+
+    # ─── MODE DE SECOURS LLM ─────────────────────────────────────────────────
+    # Si le parsing déterministe n'a produit AUCUNE transaction métier
+    # (heartbeats inclus = 0, ou que des heartbeats), tenter l'extraction LLM.
+    business_count = len(final_transactions)
+    if business_count == 0:
+        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+            _lp_logger.warning("[log_parser] 0 transaction détectée sur fichier non vide '%s'", file_path)
+        _lp_logger.info(
+            "[log_parser] Aucune transaction extraite par parsing déterministe dans '%s'. "
+            "Tentative du mode de secours LLM...",
+            file_path,
+        )
+        try:
+            llm_txs = _llm_fallback_parse(file_path, doc_session_id=doc_session_id)
+            if llm_txs:
+                # Filtrer les heartbeats extraits par le LLM si demandé
+                if not include_heartbeats:
+                    llm_txs = [
+                        tx for tx in llm_txs
+                        if not (tx.get("is_heartbeat") and not tx.get("failed_functions") and not tx.get("alerts_found"))
+                    ]
+                return ParsedTransactionList(llm_txs, heartbeat_count=heartbeat_count)
+        except Exception as _fb_err:
+            _lp_logger.warning("[log_parser] Mode de secours LLM a échoué : %s", _fb_err)
 
     return ParsedTransactionList(final_transactions, heartbeat_count=heartbeat_count)
 

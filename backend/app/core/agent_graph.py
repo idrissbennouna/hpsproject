@@ -13,7 +13,18 @@ from typing_extensions import TypedDict
 from pydantic import SecretStr
 
 from app.services.log_parser import parse_trace_file_for_story
-from app.services.spec_loader import get_monitored_function_names, get_spec_context_for_functions
+try:
+    from app.services.spec_loader import get_monitored_function_names, get_spec_context_for_functions
+except Exception as _spec_loader_err:
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "[agent_graph] Impossible d'importer spec_loader : %s. "
+        "Les fonctions get_monitored_function_names et get_spec_context_for_functions "
+        "seront des stubs no-op.",
+        _spec_loader_err,
+    )
+    def get_monitored_function_names(*args, **kwargs): return []
+    def get_spec_context_for_functions(*args, **kwargs): return ""
 from app.rag.retriever import query_specs
 from app.services.llm_util import invoke_llm_with_retry
 from app.services.token_tracker import extract_token_usage, record_usage
@@ -315,8 +326,6 @@ def rag_spec_retriever_node(state: AgentState) -> Dict[str, Any]:
 
     return {"rag_context": rag_extracted_rules, "current_agent": "RagRetrieverAgent"}
 
-
-# --- NOEUD 3 : COMPLIANCE AUDITOR ---
 def compliance_auditor_node(state: AgentState) -> Dict[str, Any]:
     """
     Étape 3 : combine la LogStory filtrée et le contexte de spec pour générer
@@ -329,6 +338,20 @@ def compliance_auditor_node(state: AgentState) -> Dict[str, Any]:
             "(aucun texte de présentation, aucun bloc markdown prose en dehors du JSON) basé sur la liste des transactions "
             "et les spécifications techniques (RAG Context) fournies, EN SUIVANT STRICTEMENT LA DEMANDE DU TESTEUR "
             "ci-dessous (variable {user_prompt}).\n\n"
+            "ADAPTATION AU FORMAT DE TRACE (NEUTRALITÉ VENDOR) :\n"
+            "- Les transactions peuvent provenir de formats variés : PowerCARD / ISO 8583 (identifiants de champs préfixés 'FLD'), "
+            "Mastercard (préfixe 'DE'), POS/EMV (tags TLV hexadécimaux), ou tout autre format propriétaire.\n"
+            "- Tu ne dois JAMAIS supposer une nomenclature fixe. Identifie le format à partir des données fournies "
+            "dans `all_fields` (chaque entrée contient : numéro, valeur, name, description).\n"
+            "- Dans toutes tes analyses, utilise le terme neutre 'identifiant de champ réseau' plutôt que 'FLD' ou 'DE'. "
+            "Pour les valeurs concrètes dans le JSON de sortie (field_number, response_code, processing_code, rrn), "
+            "reproduis EXACTEMENT la notation que tu observes dans les données : "
+            "si all_fields contient '039' avec name='Response Code', utilise la notation présente "
+            "(ex: 'FLD 039', 'DE039', 'Field 39', ou simplement '039') — ne réécris pas.\n"
+            "- Si une transaction est marquée `parsing_mode='ai_assisted'` ou `llm_fallback=true`, "
+            "c'est qu'elle a été extraite par IA depuis un format non standard. "
+            "Mentionne-le explicitement dans `pistes_diagnostiques` : "
+            "\"Analyse réalisée en mode d'interprétation assistée par IA — format de trace non standard détecté.\"\n\n"
             "Format du JSON de réponse (respecte scrupuleusement la structure des clés et les types) :\n"
             "{{\n"
             '  "summary": {{\n'
@@ -342,41 +365,47 @@ def compliance_auditor_node(state: AgentState) -> Dict[str, Any]:
             '      "transaction_id": <string, ex: "TXN-1">,\n'
             '      "is_suspicious": <boolean>,\n'
             '      "pan_masked": <string, masquer tous sauf les 4 derniers chiffres ex: "•••• •••• •••• 1991">,\n'
-            '      "stan": <string>,\n'
-            '      "rrn": <string>,\n'
-            '      "processing_code": <string>,\n'
-            '      "response_code": <string>,\n'
+            '      "stan": <string — numéro de trace système (STAN, trace number, ou équivalent)>,\n'
+            '      "rrn": <string — identifiant de référence réseau (RRN, retrieval ref, ou équivalent selon le format)>,\n'
+            '      "processing_code": <string — code de traitement (identifiant de champ réseau 3 ou DE003 ou équivalent selon le format)>,\n'
+            '      "response_code": <string — code réponse (identifiant de champ réseau 39 ou DE039 ou équivalent selon le format)>,\n'
             '      "response_code_label": <string, ex: "Approuvée" ou "Déclinée">,\n'
             '      "approval_status": <"approved" | "declined">,\n'
             '      "alerts": [<string>, ...],\n'
             '      "failed_functions": [<string, noms EXACTS des fonctions en échec issus de failed_functions dans les données parser>, ...],\n'
-            '      "pistes_diagnostiques": <string, courte piste si des fonctions ont échoué, sinon "">,\n'
+            '      "pistes_diagnostiques": <string — courte piste si des fonctions ont échoué, ou si mode IA assistée détecté, sinon "">,\n'
             '      "chronology": [<string>, ...]\n'
-            "    }}\n"
+            "    }},\n"
             "  ],\n"
             '  "field_analysis": [\n'
             "    {{\n"
-            '      "field_number": <string, ex: "FLD 039">,\n'
-            '      "field_name": <string, ex: "Response Code">,\n'
-            '      "expected_type": <string, ex: "2 AN">,\n'
-            '      "source": <string, ex: "Standard ISO 8583" ou "uploaded_spec.pdf">,\n'
+            '      "field_number": <string — notation EXACTE observée dans la trace (ex: "FLD 039", "DE039", "039", "9F26", etc.)>,\n'
+            '      "field_name": <string — nom sémantique du champ tel que fourni dans all_fields[].name ou le référentiel ISO>,\n'
+            '      "expected_type": <string, ex: "2 AN" ou "12 N">,\n'
+            '      "source": <string — "Standard ISO 8583", "Référentiel Mastercard", fichier PDF uploadé, "Type inféré par IA", etc.>,\n'
             '      "observed_value": <string, ex: "(vide)" ou "00">,\n'
-            '      "non_conformity_type": <string, ex: "Champ absent de la trace" ou "contient des lettres/symboles non conformes (attendu numérique)">,\n'
-            "      \"compliance_note\": <string, ex: \"Le code 000000 n'est pas numérique pour le PAN.\">\n"
+            '      "non_conformity_type": <string>,\n'
+            '      "compliance_note": <string — note explicative sur la non-conformité>\n'
             "    }}\n"
             "  ]\n"
             "}}\n\n"
             "Règles :\n"
             "- IMPORTANT : le JSON des transactions fourni contient TOUTES les transactions de la trace. Traite-les toutes.\n"
-            "- Pour chaque transaction avec un champ `alerts_found` non vide, passe `is_suspicious` à true et renseigne les `alerts` avec de courts libellés d'alerte.\n"
-            "- OBLIGATOIRE : copie telle quelle la liste `failed_functions` de chaque transaction parser vers le champ `failed_functions` du rapport "
-            "(noms exacts, ex. GetAuthRouting). Si la liste parser est vide, mets `[]`. Ne renomme et n'omets aucune fonction.\n"
-            "- OBLIGATOIRE : le tableau `alerts` doit contenir AU MOINS une alerte pour CHAQUE entrée de `failed_functions` "
-            "(y compris GetOriginalAuthData si présent). Ne fusionne pas plusieurs fonctions en une seule alerte si cela fait disparaître un nom.\n"
-            "- Dans `chronology`, si tu mentionnes un résultat -1/NOK pour une fonction, cette fonction DOIT aussi figurer dans `failed_functions` et `alerts`.\n"
-            "- Remplis la section `field_analysis` STRICTEMENT à partir des informations trouvées dans les listes `format_alerts` des transactions. Transpose chaque alerte de `format_alerts` en un élément du tableau `field_analysis` en utilisant fidèlement les clés : `field_number` (ex. 'FLD 003'), `field_name`, `expected_type` (utilise attributes ou expected_type_label), `source` (provenant de la clé source/source_file), `observed_value`, `non_conformity_type` et une note descriptive sur la non-conformité dans `compliance_note`.\n"
-            "- Si le testeur demande UNIQUEMENT la story (sans alertes ni justification), retourne le JSON avec `alerts` et `field_analysis` sous forme de listes vides `[]` et `suspicious_count` à 0.\n"
-            "- Si la demande est d'analyser le fichier ou demande les alertes/justifications/pistes, remplis l'intégralité des sections `summary`, `transactions` et `field_analysis`.\n"
+            "- Pour chaque transaction avec un champ `alerts_found` non vide, passe `is_suspicious` à true et renseigne `alerts` "
+            "avec de courts libellés d'alerte.\n"
+            "- OBLIGATOIRE : copie telle quelle la liste `failed_functions` de chaque transaction parser vers le champ "
+            "`failed_functions` du rapport (noms exacts). Si la liste parser est vide, mets `[]`. "
+            "Ne renomme et n'omets aucune fonction.\n"
+            "- OBLIGATOIRE : le tableau `alerts` doit contenir AU MOINS une alerte pour CHAQUE entrée de `failed_functions`. "
+            "Ne fusionne pas plusieurs fonctions en une seule alerte.\n"
+            "- Dans `chronology`, si tu mentionnes un résultat -1/NOK pour une fonction, cette fonction DOIT aussi figurer "
+            "dans `failed_functions` et `alerts`.\n"
+            "- Remplis `field_analysis` STRICTEMENT à partir des informations présentes dans `format_alerts`. "
+            "Pour field_number, reproduis la notation exacte telle qu'elle apparaît dans la trace (FLD, DE, Field, tag TLV, etc.). "
+            "Si source_file indique 'Type inféré par IA', répercute cette information dans le champ `source`.\n"
+            "- Si le testeur demande UNIQUEMENT la story, retourne `alerts` et `field_analysis` sous forme de listes vides `[]` "
+            "et `suspicious_count` à 0.\n"
+            "- Si la demande est d'analyser le fichier ou les alertes/justifications/pistes, remplis l'intégralité des sections.\n"
             "- Réponds STRICTEMENT et UNIQUEMENT avec l'objet JSON valide sans texte avant ou après."
         )),
         ("user", (

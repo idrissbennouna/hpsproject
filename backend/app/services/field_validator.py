@@ -1,10 +1,40 @@
 # backend/app/services/field_validator.py
 import json
+import logging
+import os
 import re
 import time
 from pathlib import Path
 
 from app.rag.retriever import search_session_chunks_keyword
+
+# ─── LLM (instancé localement pour éviter import circulaire agent_graph) ───────
+_fv_logger = logging.getLogger(__name__)
+try:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    from pydantic import SecretStr
+    from dotenv import load_dotenv
+    _ENV_PATH = Path(__file__).resolve().parents[3] / ".env"
+    load_dotenv(dotenv_path=_ENV_PATH, override=False)
+    _FV_GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    _FV_MODEL_NAME = (os.getenv("GEMINI_MODEL_NAME") or "gemini-2.0-flash").strip()
+    if _FV_GOOGLE_API_KEY:
+        _fv_llm = ChatGoogleGenerativeAI(
+            model=_FV_MODEL_NAME,
+            temperature=0,
+            google_api_key=SecretStr(_FV_GOOGLE_API_KEY),
+        )
+    else:
+        _fv_llm = None
+        _fv_logger.warning("[field_validator] Clé API Gemini absente — le slow-path LLM sera désactivé.")
+except Exception as _llm_init_err:
+    _fv_llm = None
+    _fv_logger.warning("[field_validator] Impossible d'initialiser le LLM local : %s", _llm_init_err)
+
+# Caches module-level — clé = (field_number, attributes_text) pour le slow-path type
+_LLM_TYPE_CACHE: dict = {}
+# Clé = field_number pour l'inférence ISO 8583 générale
+_LLM_INFER_CACHE: dict = {}
 
 FIELDS_EXCLUDED_FROM_STRICT_N = {"52"}
 # Extrait "<longueur> <type>" depuis le texte Attributes du chapitre 4
@@ -138,17 +168,67 @@ def get_iso_field_name(field_number: str) -> str:
     return f"Field {field_number}"
 
 
-def _parse_expected_type(attributes: str) -> dict | None:
-    """Extrait le type attendu (N/A/S/combinaisons) et la longueur max du texte Attributes."""
+def _parse_expected_type(attributes: str, field_number: str = None) -> dict | None:
+    """Extrait le type attendu (N/A/S/combinaisons) et la longueur max du texte Attributes.
+
+    Niveau 1 (fast-path) : ATTR_TYPE_RE.search() — 0 appel LLM.
+    Niveau 2 (slow-path) : si le fast-path échoue et que `attributes` est non-vide,
+    le LLM est interrogé pour extraire {max_length, type_code} depuis du texte en prose.
+    Résultat mis en cache dans _LLM_TYPE_CACHE pour éviter les re-appels.
+    """
     if not attributes:
         return None
+
+    # ── Niveau 1 : fast-path regex ────────────────────────────────────────────
     match = ATTR_TYPE_RE.search(attributes)
-    if not match:
+    if match:
+        length_str, type_code = match.groups()
+        if type_code:
+            return {"max_length": int(length_str), "type_code": type_code}
+
+    # ── Niveau 2 : slow-path LLM ─────────────────────────────────────────────
+    if not _fv_llm:
         return None
-    length_str, type_code = match.groups()
-    if not type_code:
+
+    attrs_clean = attributes.strip()
+    if not attrs_clean:
         return None
-    return {"max_length": int(length_str), "type_code": type_code}
+
+    cache_key = (str(field_number or ""), attrs_clean)
+    if cache_key in _LLM_TYPE_CACHE:
+        return _LLM_TYPE_CACHE[cache_key]
+
+    prompt = (
+        "Tu es un expert ISO 8583. On te donne le texte `Attributes` d'un champ de message monétique.\n"
+        "Extrais UNIQUEMENT {\"max_length\": <int>, \"type_code\": <\"N\"|\"A\"|\"AN\"|\"ANS\"|\"B\">}.\n"
+        "- max_length : la longueur maximale (entier).\n"
+        "- type_code : N=numérique, A=alphabétique, AN=alphanumérique, ANS=alphanumérique+spéciaux, B=binaire.\n"
+        "Si tu ne peux pas déterminer l'un des deux avec certitude, réponds null.\n"
+        "Réponds UNIQUEMENT avec l'objet JSON valide, sans texte autour.\n\n"
+        f"Attributes : {attrs_clean[:300]}"
+    )
+
+    try:
+        from app.services.llm_util import invoke_llm_with_retry
+        resp = invoke_llm_with_retry(_fv_llm, [{"role": "user", "content": prompt}])
+        raw = str(getattr(resp, "content", resp) or "").strip()
+        if raw.startswith("```"):
+            import re as _re
+            raw = _re.sub(r"^```(?:json)?\s*", "", raw, flags=_re.IGNORECASE)
+            raw = _re.sub(r"\s*```$", "", raw).strip()
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict) and "max_length" in parsed and "type_code" in parsed:
+            ml = parsed["max_length"]
+            tc = parsed["type_code"]
+            if isinstance(ml, int) and isinstance(tc, str) and tc in ("N", "A", "AN", "ANS", "B"):
+                result = {"max_length": ml, "type_code": tc}
+                _LLM_TYPE_CACHE[cache_key] = result
+                return result
+    except Exception as e:
+        _fv_logger.debug("[field_validator] slow-path LLM _parse_expected_type échoué pour attributes='%s': %s", attrs_clean[:60], e)
+
+    _LLM_TYPE_CACHE[cache_key] = None
+    return None
 
 
 def _value_matches_type(value: str, type_code: str) -> bool:
@@ -265,11 +345,56 @@ def validate_transaction_fields(all_fields: dict, session_id: str = None) -> lis
                 except Exception as e:
                     print(f"Warning: _query_field_definition_by_number failed for field {field_number}: {e}")
 
-            # ── ÉTAPE D : Nom de fallback ────────────────────────────────────────
-            if not field_name:
-                field_name = get_iso_field_name(field_number)
-            if not source_file:
-                source_file = "document de session"
+        # ── ÉTAPE D : Nom de fallback + inférence IA pour champ complètement inconnu ──
+        if not field_name:
+            field_name = get_iso_field_name(field_number)
+        if not source_file:
+            source_file = "document de session"
+
+        # ── ÉTAPE D-LLM : Inférence ISO 8583 générale pour champ NON documenté ────
+        # Déclenché UNIQUEMENT si aucune source (VIP/ISO/RAG/global) n'a donné d'attributs.
+        # Jamais un remplacement : si VIP/ISO/RAG ont trouvé quelque chose, on n'arrive pas ici.
+        if not attributes and _fv_llm and field_number not in _LLM_INFER_CACHE:
+            _infer_prompt = (
+                "Tu es un expert ISO 8583 et monétique PowerCARD (HPS).\n"
+                f"Le champ FLD {field_number} n'est pas répertorié dans la documentation officielle disponible.\n"
+                "D'après ta connaissance générale de la norme ISO 8583 et des implémentations Visa/Mastercard/PowerCARD, "
+                "propose un type et une longueur maximale PLAUSIBLES pour ce champ.\n"
+                "Réponds UNIQUEMENT avec ce JSON valide (sans texte autour) :\n"
+                '{"field_name": "<nom probable>", "max_length": <int>, "type_code": "<N|A|AN|ANS|B>"}'
+            )
+            try:
+                from app.services.llm_util import invoke_llm_with_retry
+                _resp = invoke_llm_with_retry(_fv_llm, [{"role": "user", "content": _infer_prompt}])
+                _raw = str(getattr(_resp, "content", _resp) or "").strip()
+                if _raw.startswith("```"):
+                    import re as _re2
+                    _raw = _re2.sub(r"^```(?:json)?\s*", "", _raw, flags=_re2.IGNORECASE)
+                    _raw = _re2.sub(r"\s*```$", "", _raw).strip()
+                _inferred = json.loads(_raw)
+                if isinstance(_inferred, dict) and "max_length" in _inferred and "type_code" in _inferred:
+                    _ml = _inferred["max_length"]
+                    _tc = _inferred["type_code"]
+                    _fn = _inferred.get("field_name") or field_name
+                    if isinstance(_ml, int) and isinstance(_tc, str):
+                        _LLM_INFER_CACHE[field_number] = {
+                            "attributes": f"{_ml} {_tc}",
+                            "field_name": _fn,
+                            "source_file": "Type inféré par IA (ISO 8583 général — non documenté officiellement)",
+                        }
+                        _fv_logger.debug(
+                            "[field_validator] Champ FLD %s inféré par IA : %s %s",
+                            field_number, _ml, _tc,
+                        )
+            except Exception as _ie:
+                _fv_logger.debug("[field_validator] Inférence IA échouée pour FLD %s : %s", field_number, _ie)
+                _LLM_INFER_CACHE[field_number] = None
+
+        if not attributes and field_number in _LLM_INFER_CACHE and _LLM_INFER_CACHE[field_number]:
+            _inf = _LLM_INFER_CACHE[field_number]
+            attributes = _inf["attributes"]
+            field_name = _inf.get("field_name") or field_name
+            source_file = _inf["source_file"]
 
         if attributes:
             definitions_cache[field_number] = {
@@ -293,7 +418,7 @@ def validate_transaction_fields(all_fields: dict, session_id: str = None) -> lis
         if definition is None:
             continue
 
-        expected = _parse_expected_type(definition.get("attributes", ""))
+        expected = _parse_expected_type(definition.get("attributes", ""), field_number)
         if expected is None:
             continue
 
